@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "scenescout",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8674"],
+      "port": 8674
+    }
+  ]
+}
