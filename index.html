@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SceneScout — Location Scouting for Photo &amp; Film</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">
+    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+  </script>
+</head>
+<body>
+  <header>
+    <div class="logo">Scene<em>Scout</em></div>
+    <div class="tagline">Find it on the map · Walk it in 3D · Check the street</div>
+    <div class="spacer"></div>
+    <button id="settings-btn">⚙ Settings</button>
+  </header>
+
+  <div id="layout">
+    <aside id="sidebar">
+      <section id="ai-search">
+        <label class="ai-label">Describe the location you need</label>
+        <div class="ai-box">
+          <textarea id="ai-input" rows="2" placeholder="e.g. Modern industrial warehouse with large windows near downtown Chicago under $500/day"></textarea>
+          <button id="ai-go" title="Interpret with AI">Search ✨</button>
+        </div>
+        <div id="ai-examples" class="ai-examples"></div>
+        <div id="ai-interpreted" class="ai-interpreted hidden"></div>
+      </section>
+
+      <details id="filters-wrap" open>
+        <summary>Refine filters</summary>
+      <section id="filters">
+        <div class="filter-grid">
+          <div class="filter-row">
+            <label>Search area</label>
+            <select id="center-select"></select>
+          </div>
+          <div class="filter-row">
+            <label>Radius <b id="radius-label"></b></label>
+            <input type="range" id="radius-range" min="1" max="60" step="1" value="15">
+          </div>
+        </div>
+        <div class="filter-row">
+          <label>City, ZIP, or address</label>
+          <div class="geo-box">
+            <input type="text" id="geo-input" placeholder="Search anywhere in the US…">
+            <button id="geo-go" title="Go">Go</button>
+          </div>
+        </div>
+        <div class="filter-row">
+          <label>Location type <span style="text-transform:none;letter-spacing:0">(any if none selected)</span></label>
+          <div id="type-chips"></div>
+        </div>
+        <div class="filter-grid">
+          <div class="filter-row">
+            <label>Min size <b id="sqft-label"></b></label>
+            <input type="range" id="sqft-range" min="0" max="10000" step="250" value="0">
+          </div>
+          <div class="filter-row">
+            <label>Budget <b id="rate-label"></b></label>
+            <input type="range" id="rate-range" min="100" max="600" step="25" value="600">
+          </div>
+        </div>
+        <div class="filter-grid">
+          <div class="filter-row">
+            <label>Natural light</label>
+            <select id="light-select">
+              <option value="any">Any</option>
+              <option value="abundant">Abundant only</option>
+              <option value="moderate">Moderate or better</option>
+              <option value="controlled">Blackout / controlled</option>
+            </select>
+          </div>
+          <div class="filter-row">
+            <label>Sort by</label>
+            <select id="sort-select">
+              <option value="match">Best match</option>
+              <option value="distance">Nearest</option>
+              <option value="price">Price: low to high</option>
+              <option value="size">Largest</option>
+            </select>
+          </div>
+        </div>
+      </section>
+      </details>
+      <div id="results-meta"></div>
+      <div id="results"></div>
+    </aside>
+    <main id="map">
+      <div id="map2d"></div>
+      <div id="map3d"></div>
+      <div id="map-toggle">
+        <button data-view="2d" class="active">🗺 2D</button>
+        <button data-view="3d">🌎 3D</button>
+      </div>
+    </main>
+  </div>
+
+  <!-- listing detail -->
+  <div id="detail" class="overlay hidden">
+    <div class="modal">
+      <button class="modal-close" id="detail-close">✕</button>
+      <div class="hero-wrap">
+        <canvas id="hero-canvas" width="1320" height="600"></canvas>
+        <div id="hero-badge"></div>
+      </div>
+      <div class="modal-body">
+        <h2 id="detail-title"></h2>
+        <div id="detail-sub"></div>
+        <p id="detail-desc"></p>
+        <div id="detail-stats"></div>
+        <div class="actions">
+          <button class="btn primary" id="enter-tour">🚶 Enter 3D Digital Twin</button>
+          <button class="btn" id="fly-tour">🎬 Cinematic Flythrough</button>
+          <button class="btn" id="toggle-sv">🛣 Street View</button>
+          <button class="btn" id="open-earth">🌎 Google Earth ↗</button>
+          <button class="btn" id="open-directions">🧭 Directions ↗</button>
+        </div>
+        <div id="sv-panel" class="hidden"></div>
+        <div id="detail-suit"></div>
+        <div id="detail-intel"></div>
+        <div id="detail-reviews"></div>
+        <div id="detail-tags"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3D tour -->
+  <div id="tour" class="overlay hidden">
+    <div id="tour-canvas-wrap"></div>
+    <div id="tour-topbar">
+      <div id="tour-title"></div>
+      <div id="tour-modes">
+        <button data-mode="walk">🚶 Walk</button>
+        <button data-mode="fly">🎬 Flythrough</button>
+        <button data-mode="orbit">🏠 Dollhouse</button>
+        <button data-mode="plan">📐 Floor Plan</button>
+      </div>
+      <div id="tour-rooms"></div>
+      <button id="tour-close">✕</button>
+    </div>
+    <canvas id="tour-minimap" width="380" height="380"></canvas>
+    <div id="tour-help"></div>
+    <div id="tour-lens">~35mm · FOV 70°</div>
+  </div>
+
+  <!-- settings -->
+  <div id="settings" class="overlay hidden">
+    <div class="settings-box">
+      <button class="modal-close" id="settings-close">✕</button>
+      <h2>Settings</h2>
+      <p>Paste a Google Maps API key (with the <b>Maps Embed API</b> enabled) to get live
+        Street View embedded inside listing pages. Without a key, Street View and Google
+        Earth still open in a new tab — no key required.</p>
+      <input type="password" id="api-key-input" placeholder="Google Maps API key (optional)">
+      <div class="actions">
+        <button class="btn primary" id="settings-save">Save</button>
+      </div>
+      <div class="data-note">
+        <b>About the data:</b> listings and 3D twins here are simulated for demonstration.
+        In production, inventory would come from licensed listing feeds (MLS/Zillow partner
+        API, Peerspace, Giggster) and twins would be reconstructed from listing photos via
+        photogrammetry (Matterport SDK, NeRF / Gaussian splatting). Scraping Zillow directly
+        violates their terms of service, so this prototype keeps that boundary clean.
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
