@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: scenescout
+    runtime: node
+    plan: free
+    branch: claude/geophoto-photoscout-clone-9ufo71
+    autoDeploy: true
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: GROQ_API_KEY
+        sync: false
+      - key: LOCATIONIQ_KEY
+        sync: false
