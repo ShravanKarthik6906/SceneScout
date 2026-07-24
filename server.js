@@ -230,7 +230,21 @@ function hashQuery(q) {
   return String(h);
 }
 
-const { overpass } = require('overpass-ts');
+const { overpassJson, OverpassRateLimitError, OverpassGatewayTimeoutError } = require('overpass-ts');
+
+// overpass-ts has no built-in retry — it just throws distinct error classes
+// for 429/504 — so rate-limit/gateway-timeout backoff has to be handled here.
+async function overpassJsonWithRetry(query, opts, retries = 3, pauseMs = 2000) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await overpassJson(query, opts);
+    } catch (e) {
+      const retryable = e instanceof OverpassRateLimitError || e instanceof OverpassGatewayTimeoutError;
+      if (!retryable || attempt >= retries) throw e;
+      await new Promise(r => setTimeout(r, pauseMs));
+    }
+  }
+}
 const DDG = require('duck-duck-scrape');
 
 // ------------------------------------------------------------- photo search
@@ -335,19 +349,15 @@ app.post('/api/overpass', async (req, res) => {
 
   try {
     const data = await enqueueOverpass(async () => {
-      // overpass-ts handles endpoint retry, rate-limit (429) and gateway
-      // timeout (504) backoff internally — no need to hand-roll a mirror
-      // loop. It still needs a proper User-Agent, same courtesy requirement
-      // as Nominatim.
-      return overpass(query, {
+      // overpassJson() resolves the parsed JSON body directly (overpass()
+      // resolves the raw, unparsed fetch Response). Rate-limit (429) and
+      // gateway-timeout (504) retries are handled by overpassJsonWithRetry
+      // since the library only throws distinct error classes for those, it
+      // doesn't retry on its own. Needs a proper User-Agent, same courtesy
+      // requirement as Nominatim.
+      return overpassJsonWithRetry(query, {
         endpoint: 'https://overpass-api.de/api/interpreter',
-        rateLimitRetries: 3,
-        rateLimitPause: 2000,
-        fetchOpts: {
-          headers: {
-            'User-Agent': 'SceneScout/0.1 (hackathon project; contact: udaya@example.com)',
-          },
-        },
+        userAgent: 'SceneScout/0.1 (hackathon project; contact: udaya@example.com)',
       });
     });
     overpassCache[key] = data;
