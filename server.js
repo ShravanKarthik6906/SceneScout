@@ -2,7 +2,6 @@
 const express = require('express');
 const cors = require('cors'); // enable CORS
 const path = require('path');
-const fs = require('fs');
 
 const app = express();
 app.use(cors());
@@ -20,24 +19,17 @@ const GROQ_API_KEY = process.env.GROQ_API_KEY || 'YOUR_GROQ_KEY_HERE';
 // their recommended replacement for that model class.
 const GROQ_MODEL = 'openai/gpt-oss-120b';
 
-// Simple JSON file cache: address -> result
-const CACHE_PATH = path.join(__dirname, 'geocode-cache.json');
-let cache = {};
-try {
-  if (fs.existsSync(CACHE_PATH)) {
-    cache = JSON.parse(fs.readFileSync(CACHE_PATH, 'utf8'));
-  }
-} catch (e) {
-  console.warn('Failed to load cache', e);
-}
+// Shared courtesy User-Agent for every third-party API this server calls
+// (Overpass, Wikipedia, Wikimedia Commons) — all of them ask for one.
+const USER_AGENT = 'SceneScout/0.1 (hackathon project; contact: udaya@example.com)';
 
-function saveCache() {
-  try {
-    fs.writeFileSync(CACHE_PATH, JSON.stringify(cache, null, 2), 'utf8');
-  } catch (e) {
-    console.error('Failed to write cache', e);
-  }
-}
+// In-memory only, intentionally not persisted to disk: this app's typical
+// hosts (e.g. Render's free tier) wipe the local filesystem on every
+// deploy/restart, so a JSON-file cache was providing zero benefit across
+// deploys while still costing disk I/O on every request. Caches still work
+// within a single running process, which is what actually matters here —
+// short-lived request bursts (e.g. re-rendering the same search).
+let cache = {}; // geocode: address -> result
 
 // Serialize all outbound LocationIQ calls through one queue so concurrent
 // client requests (e.g. geocoding 20 locations on page load) never exceed
@@ -91,7 +83,6 @@ app.get('/api/geocode', async (req, res) => {
       return response.json();
     });
     cache[address] = data; // cache even empty results
-    saveCache();
     res.json(data);
   } catch (e) {
     console.error('Geocode proxy error', e);
@@ -199,22 +190,7 @@ app.post('/api/parse-query', async (req, res) => {
 });
 
 // ------------------------------------------------------------- Overpass (lakes)
-const OVERPASS_CACHE_PATH = path.join(__dirname, 'overpass-cache.json');
-let overpassCache = {};
-try {
-  if (fs.existsSync(OVERPASS_CACHE_PATH)) {
-    overpassCache = JSON.parse(fs.readFileSync(OVERPASS_CACHE_PATH, 'utf8'));
-  }
-} catch (e) {
-  console.warn('Failed to load overpass cache', e);
-}
-function saveOverpassCache() {
-  try {
-    fs.writeFileSync(OVERPASS_CACHE_PATH, JSON.stringify(overpassCache, null, 2), 'utf8');
-  } catch (e) {
-    console.error('Failed to write overpass cache', e);
-  }
-}
+let overpassCache = {}; // query hash -> parsed result, in-memory only (see note above)
 
 // Separate queue from the LocationIQ one — Overpass's public instance asks
 // for one request at a time, not a fixed req/sec, so we serialize fully.
@@ -250,7 +226,7 @@ const OVERPASS_ENDPOINTS = [
   'https://overpass.openstreetmap.fr/api/interpreter',
 ];
 
-async function overpassJsonWithRetry(query, { userAgent }, retries = OVERPASS_ENDPOINTS.length - 1, pauseMs = 1500) {
+async function overpassJsonWithRetry(query, retries = OVERPASS_ENDPOINTS.length - 1, pauseMs = 1500) {
   for (let attempt = 0; ; attempt++) {
     const endpoint = OVERPASS_ENDPOINTS[attempt % OVERPASS_ENDPOINTS.length];
     let resp;
@@ -260,7 +236,7 @@ async function overpassJsonWithRetry(query, { userAgent }, retries = OVERPASS_EN
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
           'Accept': 'application/json',
-          'User-Agent': userAgent,
+          'User-Agent': USER_AGENT,
         },
         body: `data=${encodeURIComponent(query)}`,
       });
@@ -284,41 +260,58 @@ async function overpassJsonWithRetry(query, { userAgent }, retries = OVERPASS_EN
     await new Promise(r => setTimeout(r, pauseMs));
   }
 }
-const DDG = require('duck-duck-scrape');
-
 // ------------------------------------------------------------- photo search
-// Real photos of a location, via DuckDuckGo image search (duck-duck-scrape —
-// the maintained Node equivalent of Python's ddgs/duckduckgo_search).
-const PHOTO_CACHE_PATH = path.join(__dirname, 'photo-cache.json');
-let photoCache = {};
-try {
-  if (fs.existsSync(PHOTO_CACHE_PATH)) {
-    photoCache = JSON.parse(fs.readFileSync(PHOTO_CACHE_PATH, 'utf8'));
-  }
-} catch (e) {
-  console.warn('Failed to load photo cache', e);
-}
-function savePhotoCache() {
-  try {
-    fs.writeFileSync(PHOTO_CACHE_PATH, JSON.stringify(photoCache, null, 2), 'utf8');
-  } catch (e) {
-    console.error('Failed to write photo cache', e);
-  }
-}
-// DuckDuckGo's image search is unofficial/scraped — self-throttle
-// conservatively to avoid getting blocked, same queue pattern as geocoding.
-let photoQueue = Promise.resolve();
-let lastPhotoCall = 0;
-const PHOTO_MIN_INTERVAL = 1200;
-function enqueuePhoto(fn) {
-  const result = photoQueue.then(async () => {
-    const wait = Math.max(0, PHOTO_MIN_INTERVAL - (Date.now() - lastPhotoCall));
-    if (wait > 0) await new Promise(r => setTimeout(r, wait));
-    lastPhotoCall = Date.now();
-    return fn();
+// Real photos of a location. Two free, official, keyless sources — no
+// scraping: Wikimedia Commons first (great hit rate for actual real-world
+// places, e.g. natural features, since it's the same project as the
+// Wikipedia lookup below), falling back to Openverse (an aggregated
+// Creative-Commons-media search covering Flickr/museums/etc.) for the
+// fictional curated catalog, where Commons won't have a real match.
+let photoCache = {}; // query -> results, in-memory only (see note above)
+
+async function searchCommonsPhotos(query) {
+  const url = 'https://commons.wikimedia.org/w/api.php?' + new URLSearchParams({
+    action: 'query', format: 'json', generator: 'search',
+    gsrnamespace: '6', gsrsearch: query, gsrlimit: '12',
+    prop: 'imageinfo', iiprop: 'url|size', iiurlwidth: '480',
   });
-  photoQueue = result.catch(() => { });
-  return result;
+  const res = await fetch(url, { headers: { 'User-Agent': USER_AGENT } });
+  if (!res.ok) return [];
+  const data = await res.json();
+  const pages = Object.values(data.query?.pages || {});
+  return pages
+    .filter(p => p.imageinfo?.[0]?.url)
+    .map(p => {
+      const info = p.imageinfo[0];
+      const title = p.title.replace(/^File:/, '').replace(/\.\w+$/, '').replace(/_/g, ' ');
+      return {
+        image: info.url,
+        thumbnail: info.thumburl || info.url,
+        title,
+        source: 'Wikimedia Commons',
+        width: info.width, height: info.height,
+        url: `https://commons.wikimedia.org/wiki/${encodeURIComponent(p.title)}`,
+      };
+    });
+}
+
+async function searchOpenversePhotos(query) {
+  const url = 'https://api.openverse.org/v1/images/?' + new URLSearchParams({
+    q: query, page_size: '12', license_type: 'commercial,modification',
+  });
+  const res = await fetch(url, { headers: { 'User-Agent': USER_AGENT } });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return (data.results || [])
+    .filter(r => r.url)
+    .map(r => ({
+      image: r.url,
+      thumbnail: r.thumbnail || r.url,
+      title: r.title || '',
+      source: r.source || 'Openverse',
+      width: r.width, height: r.height,
+      url: r.foreign_landing_url || r.url,
+    }));
 }
 
 app.get('/api/location-photos', async (req, res) => {
@@ -329,16 +322,10 @@ app.get('/api/location-photos', async (req, res) => {
   if (photoCache[key]) return res.json(photoCache[key]);
 
   try {
-    const result = await enqueuePhoto(() =>
-      DDG.searchImages(trimmed, { safeSearch: DDG.SafeSearchType.MODERATE })
-    );
-    const simplified = (result.results || []).slice(0, 12).map(r => ({
-      image: r.image, thumbnail: r.thumbnail, title: r.title,
-      source: r.source, width: r.width, height: r.height, url: r.url,
-    }));
-    photoCache[key] = simplified;
-    savePhotoCache();
-    res.json(simplified);
+    let results = await searchCommonsPhotos(trimmed);
+    if (!results.length) results = await searchOpenversePhotos(trimmed);
+    photoCache[key] = results;
+    res.json(results);
   } catch (e) {
     console.error('Photo search error', e.message);
     res.status(500).json({ error: e.message || 'Internal server error' });
@@ -351,28 +338,11 @@ app.get('/api/location-photos', async (req, res) => {
 // carried a wikipedia=lang:Title tag we fetch that article directly;
 // otherwise fall back to a geosearch by coordinates for the nearest
 // plausibly-matching article.
-const PLACE_INFO_CACHE_PATH = path.join(__dirname, 'place-info-cache.json');
-let placeInfoCache = {};
-try {
-  if (fs.existsSync(PLACE_INFO_CACHE_PATH)) {
-    placeInfoCache = JSON.parse(fs.readFileSync(PLACE_INFO_CACHE_PATH, 'utf8'));
-  }
-} catch (e) {
-  console.warn('Failed to load place-info cache', e);
-}
-function savePlaceInfoCache() {
-  try {
-    fs.writeFileSync(PLACE_INFO_CACHE_PATH, JSON.stringify(placeInfoCache, null, 2), 'utf8');
-  } catch (e) {
-    console.error('Failed to write place-info cache', e);
-  }
-}
-
-const WIKI_USER_AGENT = 'SceneScout/0.1 (hackathon project; contact: udaya@example.com)';
+let placeInfoCache = {}; // in-memory only (see note above)
 
 async function fetchWikiSummary(lang, title) {
   const res = await fetch(`https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`, {
-    headers: { 'User-Agent': WIKI_USER_AGENT, 'Accept': 'application/json' },
+    headers: { 'User-Agent': USER_AGENT, 'Accept': 'application/json' },
   });
   if (!res.ok) return null;
   const data = await res.json();
@@ -392,7 +362,7 @@ async function geosearchWikiTitle(lat, lng, name) {
   const res = await fetch(
     `https://en.wikipedia.org/w/api.php?action=query&list=geosearch&format=json` +
     `&gscoord=${lat}|${lng}&gsradius=8000&gslimit=5`,
-    { headers: { 'User-Agent': WIKI_USER_AGENT } }
+    { headers: { 'User-Agent': USER_AGENT } }
   );
   if (!res.ok) return null;
   const data = await res.json();
@@ -422,7 +392,6 @@ app.get('/api/place-info', async (req, res) => {
     }
     const payload = result || { found: false };
     placeInfoCache[key] = payload;
-    savePlaceInfoCache();
     res.json(payload);
   } catch (e) {
     console.error('Place-info lookup failed:', e.message);
@@ -456,7 +425,6 @@ app.get('/api/reverse-geocode', async (req, res) => {
       return response.json();
     });
     cache[key] = data;
-    saveCache();
     res.json(data);
   } catch (e) {
     console.error('Reverse geocode error', e.message);
@@ -472,14 +440,8 @@ app.post('/api/overpass', async (req, res) => {
   if (overpassCache[key]) return res.json(overpassCache[key]);
 
   try {
-    const data = await enqueueOverpass(async () => {
-      // Needs a proper User-Agent, same courtesy requirement as Nominatim.
-      return overpassJsonWithRetry(query, {
-        userAgent: 'SceneScout/0.1 (hackathon project; contact: udaya@example.com)',
-      });
-    });
+    const data = await enqueueOverpass(() => overpassJsonWithRetry(query));
     overpassCache[key] = data;
-    saveOverpassCache();
     res.json(data);
   } catch (e) {
     console.error('Overpass query failed:', e.message);

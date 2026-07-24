@@ -124,8 +124,8 @@ export async function geocode(query) {
 }
 
 // ------------------------------------------------------------ location photos
-// Real photos of a location via DuckDuckGo image search, proxied through our
-// own server (duck-duck-scrape) to keep the request server-side.
+// Real photos of a location via Wikimedia Commons (falling back to
+// Openverse), proxied through our own server — see /api/location-photos.
 export async function fetchLocationPhotos(query) {
   try {
     const res = await fetch(`/api/location-photos?q=${encodeURIComponent(query)}`);
