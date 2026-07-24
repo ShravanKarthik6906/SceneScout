@@ -136,6 +136,23 @@ export async function fetchLocationPhotos(query) {
   }
 }
 
+// -------------------------------------------------------------- place info
+// Real-world background for a natural/geographic feature via Wikipedia,
+// proxied through our own server (see /api/place-info in server.js).
+export async function fetchPlaceInfo({ lat, lng, name, wikipedia }) {
+  const params = new URLSearchParams({ lat, lng });
+  if (name) params.set('name', name);
+  if (wikipedia) params.set('wikipedia', wikipedia);
+  try {
+    const res = await fetch(`/api/place-info?${params}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.found === false ? null : data;
+  } catch {
+    return null;
+  }
+}
+
 // -------------------------------------------------------- reverse geocoding
 // Used by "explore the globe" mode: turns a clicked lat/lng into a place
 // name via our /api/reverse-geocode proxy (LocationIQ).

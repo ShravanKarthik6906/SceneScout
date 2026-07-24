@@ -320,6 +320,91 @@ app.get('/api/location-photos', async (req, res) => {
   }
 });
 
+// -------------------------------------------------------------- place info
+// Real-world background for natural/geographic features (lakes, parks,
+// mountains, ...) via Wikipedia — free, no API key. If the OSM element
+// carried a wikipedia=lang:Title tag we fetch that article directly;
+// otherwise fall back to a geosearch by coordinates for the nearest
+// plausibly-matching article.
+const PLACE_INFO_CACHE_PATH = path.join(__dirname, 'place-info-cache.json');
+let placeInfoCache = {};
+try {
+  if (fs.existsSync(PLACE_INFO_CACHE_PATH)) {
+    placeInfoCache = JSON.parse(fs.readFileSync(PLACE_INFO_CACHE_PATH, 'utf8'));
+  }
+} catch (e) {
+  console.warn('Failed to load place-info cache', e);
+}
+function savePlaceInfoCache() {
+  try {
+    fs.writeFileSync(PLACE_INFO_CACHE_PATH, JSON.stringify(placeInfoCache, null, 2), 'utf8');
+  } catch (e) {
+    console.error('Failed to write place-info cache', e);
+  }
+}
+
+const WIKI_USER_AGENT = 'SceneScout/0.1 (hackathon project; contact: udaya@example.com)';
+
+async function fetchWikiSummary(lang, title) {
+  const res = await fetch(`https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`, {
+    headers: { 'User-Agent': WIKI_USER_AGENT, 'Accept': 'application/json' },
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (data.type === 'disambiguation' || !data.extract) return null;
+  return {
+    title: data.title,
+    extract: data.extract,
+    thumbnail: data.thumbnail?.source || null,
+    url: data.content_urls?.desktop?.page || `https://${lang}.wikipedia.org/wiki/${encodeURIComponent(title)}`,
+  };
+}
+
+// Finds the nearest Wikipedia article to a coordinate, preferring one whose
+// title resembles the feature's OSM name over just taking the closest hit —
+// geosearch radius can easily include an unrelated nearby article otherwise.
+async function geosearchWikiTitle(lat, lng, name) {
+  const res = await fetch(
+    `https://en.wikipedia.org/w/api.php?action=query&list=geosearch&format=json` +
+    `&gscoord=${lat}|${lng}&gsradius=8000&gslimit=5`,
+    { headers: { 'User-Agent': WIKI_USER_AGENT } }
+  );
+  if (!res.ok) return null;
+  const data = await res.json();
+  const hits = data.query?.geosearch || [];
+  if (!hits.length) return null;
+  const norm = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const named = name ? hits.find(h => norm(h.title).includes(norm(name)) || norm(name).includes(norm(h.title))) : null;
+  return (named || hits[0]).title;
+}
+
+app.get('/api/place-info', async (req, res) => {
+  const { lat, lng, name, wikipedia } = req.query;
+  if (!lat || !lng) return res.status(400).json({ error: 'Missing lat/lng' });
+
+  const key = 'place:' + hashQuery(`${wikipedia || ''}|${lat}|${lng}|${name || ''}`);
+  if (placeInfoCache[key]) return res.json(placeInfoCache[key]);
+
+  try {
+    let result = null;
+    if (wikipedia && wikipedia.includes(':')) {
+      const sep = wikipedia.indexOf(':');
+      result = await fetchWikiSummary(wikipedia.slice(0, sep), wikipedia.slice(sep + 1));
+    }
+    if (!result) {
+      const title = await geosearchWikiTitle(+lat, +lng, name);
+      if (title) result = await fetchWikiSummary('en', title);
+    }
+    const payload = result || { found: false };
+    placeInfoCache[key] = payload;
+    savePlaceInfoCache();
+    res.json(payload);
+  } catch (e) {
+    console.error('Place-info lookup failed:', e.message);
+    res.status(500).json({ error: e.message || 'Internal server error' });
+  }
+});
+
 // ---------------------------------------------------------- reverse geocode
 // Used by the "explore the globe" click handler — turns a lat/lng the user
 // clicked into a human-readable place name. Shares LocationIQ's existing

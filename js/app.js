@@ -8,7 +8,7 @@ import { drawPlanThumb, drawIsoHero } from './thumbs.js';
 import { openTour } from './tour.js';
 import { parseQuery } from './nlp.js';
 import { computeSuitability } from './score.js';
-import { sunTimes, sunPosition, fmtTime, fmtTimeAt, tzAbbr, compass, geocode, forecast, weatherText, fetchLocationPhotos, reverseGeocode } from './intel.js';
+import { sunTimes, sunPosition, fmtTime, fmtTimeAt, tzAbbr, compass, geocode, forecast, weatherText, fetchLocationPhotos, fetchPlaceInfo, reverseGeocode } from './intel.js';
 import { ensure3D, resize3D, update3D, flyHome3D, flyToListing3D, setGlobeMode, flyToGlobalView } from './map3d.js';
 import { findNaturalFeatures } from './NaturalFeatures.js';
 
@@ -335,6 +335,7 @@ function openDetail(loc) {
     console.warn('[thumbs] drawIsoHero failed for', loc.id, e.message);
   }
   renderPhotos(loc);
+  renderPlaceInfo(loc);
   const sv = document.getElementById('sv-panel');
   sv.classList.add('hidden'); sv.innerHTML = '';
   document.querySelector('.modal').scrollTop = 0;
@@ -496,6 +497,58 @@ async function renderPhotos(loc) {
         <a class="photo-tile" href="${escapeHtml(p.url || p.image)}" target="_blank" rel="noopener" title="${escapeHtml(p.title || '')}">
           <img src="${escapeHtml(p.thumbnail || p.image)}" alt="${escapeHtml(p.title || loc.name)}" loading="lazy" />
         </a>`).join('')}
+    </div>`;
+}
+
+// Real-world background for a natural/geographic feature (lake, park,
+// mountain, ...) via Wikipedia. Only meaningful for dynamic feature results
+// — the curated soundstage/loft/etc. catalog is fictional and already has
+// hand-authored descriptions, so a Wikipedia lookup for those would just
+// return an unrelated real-world match or nothing at all.
+function getOrCreatePlaceInfoContainer() {
+  let el = document.getElementById('detail-place-info');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'detail-place-info';
+  el.className = 'detail-place-info';
+  const desc = document.getElementById('detail-desc');
+  if (desc && desc.parentNode) {
+    desc.parentNode.insertBefore(el, desc.nextSibling);
+  } else {
+    document.querySelector('.modal')?.appendChild(el);
+  }
+  return el;
+}
+
+async function renderPlaceInfo(loc) {
+  if (loc.floorplan) {
+    const existing = document.getElementById('detail-place-info');
+    if (existing) existing.innerHTML = '';
+    return;
+  }
+
+  const el = getOrCreatePlaceInfoContainer();
+  el.innerHTML = `<div class="place-info-loading">Looking up ${escapeHtml(loc._label || 'this place')} on Wikipedia…</div>`;
+
+  const info = await fetchPlaceInfo({ lat: loc.lat, lng: loc.lng, name: loc.name, wikipedia: loc.wikipedia });
+
+  // Guard against a stale response landing after the user closed/switched
+  // to a different location's detail view — same pattern as renderPhotos.
+  if (currentLoc !== loc) return;
+
+  if (!info) {
+    el.innerHTML = `<div class="place-info-empty">No Wikipedia article found for this location.</div>`;
+    return;
+  }
+
+  el.innerHTML = `
+    <div class="section-h">About <span class="section-sub">via Wikipedia</span></div>
+    <div class="place-info-body">
+      ${info.thumbnail ? `<img class="place-info-thumb" src="${escapeHtml(info.thumbnail)}" alt="${escapeHtml(info.title)}" loading="lazy">` : ''}
+      <div>
+        <p>${escapeHtml(info.extract)}</p>
+        <a href="${escapeHtml(info.url)}" target="_blank" rel="noopener">Read more on Wikipedia ↗</a>
+      </div>
     </div>`;
 }
 

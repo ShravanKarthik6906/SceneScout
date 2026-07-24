@@ -109,6 +109,9 @@ function toFeatureLocation(el, feature, name, lat, lng, diameterFt) {
         lat, lng,
         address: `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
         neighborhood: el.tags?.['addr:city'] || 'Unincorporated area',
+        // OSM's wikipedia=lang:Title tag, when present, lets /api/place-info
+        // fetch the exact matching article instead of guessing by geosearch.
+        wikipedia: el.tags?.wikipedia || null,
         sqft: diameterFt ? Math.round(Math.PI * (diameterFt / 2) ** 2) : 0,
         ceilingFt: null,
         rate: 0,
