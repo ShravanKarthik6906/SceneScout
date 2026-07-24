@@ -36,6 +36,27 @@ const LIGHT_CONTROLLED = ['blackout', 'black out', 'controlled light', 'no windo
 
 const NUM_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
 
+// A small offline fallback for the most common natural/geographic features,
+// so single-word queries like "lake" or "river" still trigger a live
+// OpenStreetMap search even when Groq is unavailable. Groq (parseQuery's
+// primary path) covers a far wider vocabulary and infers real OSM tags on
+// the fly — this list exists only so search doesn't go completely blind on
+// the common cases when no key is configured. Shape matches PARSE_SYSTEM_PROMPT's
+// naturalFeature schema in server.js exactly, so NaturalFeatures.js can
+// consume either source identically.
+const NATURAL_FEATURE_LEXICON = [
+  { words: ['lake', 'pond', 'reservoir'], feature: { label: 'Lake', icon: '🏞️', osmTags: [{ key: 'natural', value: 'water' }], elementTypes: ['way', 'relation'] } },
+  { words: ['river', 'creek', 'stream'], feature: { label: 'River', icon: '🌊', osmTags: [{ key: 'waterway', value: 'river' }], elementTypes: ['way'] } },
+  { words: ['beach', 'shoreline', 'seashore'], feature: { label: 'Beach', icon: '🏖️', osmTags: [{ key: 'natural', value: 'beach' }], elementTypes: ['way', 'node'] } },
+  { words: ['mountain', 'peak', 'summit'], feature: { label: 'Mountain Peak', icon: '⛰️', osmTags: [{ key: 'natural', value: 'peak' }], elementTypes: ['node'] } },
+  { words: ['forest', 'woods', 'woodland'], feature: { label: 'Forest', icon: '🌲', osmTags: [{ key: 'natural', value: 'wood' }], elementTypes: ['way', 'relation'] } },
+  { words: ['waterfall', 'falls'], feature: { label: 'Waterfall', icon: '💧', osmTags: [{ key: 'waterway', value: 'waterfall' }], elementTypes: ['node', 'way'] } },
+  { words: ['cliff', 'bluff'], feature: { label: 'Cliff', icon: '🧗', osmTags: [{ key: 'natural', value: 'cliff' }], elementTypes: ['way', 'node'] } },
+  { words: ['cave'], feature: { label: 'Cave', icon: '🕳️', osmTags: [{ key: 'natural', value: 'cave_entrance' }], elementTypes: ['node'] } },
+  { words: ['park'], feature: { label: 'Park', icon: '🌳', osmTags: [{ key: 'leisure', value: 'park' }], elementTypes: ['way', 'relation'] } },
+  { words: ['island'], feature: { label: 'Island', icon: '🏝️', osmTags: [{ key: 'place', value: 'island' }], elementTypes: ['node', 'way'] } },
+];
+
 function matchAny(text, phrases) {
   for (const p of phrases) if (text.includes(p)) return p;
   return null;
@@ -54,7 +75,7 @@ function parseQueryLocal(raw) {
     maxRate: null,        // hourly
     radiusMi: null,
     locationText: null,
-    naturalFeature: null, // local parser can't detect these — only Groq does
+    naturalFeature: null, // set below from NATURAL_FEATURE_LEXICON if matched; Groq covers far more
     interpreted: [],      // human-readable chips
   };
   if (!out.raw) return out;
@@ -67,6 +88,15 @@ function parseQueryLocal(raw) {
   // ---- style / mood words
   for (const s of STYLE_WORDS) if (text.includes(s)) out.styleWords.push(s);
   out.styleWords = [...new Set(out.styleWords)];
+
+  // ---- natural feature (offline fallback lexicon — only used when Groq is
+  // unavailable; a building-type match above still takes precedence for
+  // compound queries like "lake house" since types isn't cleared here)
+  if (!out.types.size) {
+    for (const entry of NATURAL_FEATURE_LEXICON) {
+      if (matchAny(text, entry.words.map(w => ' ' + w))) { out.naturalFeature = entry.feature; break; }
+    }
+  }
 
   // ---- natural light
   if (matchAny(text, LIGHT_CONTROLLED)) out.light = 'controlled';
@@ -128,6 +158,7 @@ function parseQueryLocal(raw) {
 function buildInterpretedChips(out) {
   const chips = [];
   for (const t of out.types) if (TYPES[t]) chips.push(`${TYPES[t].icon} ${TYPES[t].label}`);
+  if (out.naturalFeature) chips.push(`${out.naturalFeature.icon || '📍'} ${out.naturalFeature.label}`);
   if (out.light) chips.push(`💡 ${out.light} light`);
   if (out.minSqft) chips.push(`📐 ${out.minSqft.toLocaleString()}+ ft²`);
   if (out.maxRate) chips.push(`💵 ≤ $${out.maxRate}/hr`);
@@ -170,9 +201,6 @@ export async function parseQuery(raw) {
       interpreted: [],
     };
     out.interpreted = buildInterpretedChips(out);
-    if (out.naturalFeature) {
-      out.interpreted.push(`${out.naturalFeature.icon || '📍'} ${out.naturalFeature.label}`);
-    }
     return out;
   } catch (e) {
     console.warn('[nlp] Groq parse failed, falling back to local parser:', e.message);
