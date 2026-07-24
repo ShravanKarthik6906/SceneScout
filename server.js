@@ -16,7 +16,9 @@ const LOCATIONIQ_KEY = process.env.LOCATIONIQ_KEY || 'YOUR_LOCATIONIQ_KEY_HERE';
 // Groq: free tier, used to parse natural-language location briefs into
 // structured filters. Sign up at https://console.groq.com/keys to get a key.
 const GROQ_API_KEY = process.env.GROQ_API_KEY || 'YOUR_GROQ_KEY_HERE';
-const GROQ_MODEL = 'llama-3.3-70b-versatile';
+// llama-3.3-70b-versatile was deprecated by Groq on 2026-06-17; this is
+// their recommended replacement for that model class.
+const GROQ_MODEL = 'openai/gpt-oss-120b';
 
 // Simple JSON file cache: address -> result
 const CACHE_PATH = path.join(__dirname, 'geocode-cache.json');
