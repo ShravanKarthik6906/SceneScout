@@ -232,19 +232,31 @@ function hashQuery(q) {
   return String(h);
 }
 
-const { overpassJson, OverpassRateLimitError, OverpassGatewayTimeoutError } = require('overpass-ts');
-
-// overpass-ts has no built-in retry — it just throws distinct error classes
-// for 429/504 — so rate-limit/gateway-timeout backoff has to be handled here.
+// overpass-ts (even at its latest published version, 4.3.8) sends a
+// malformed `Accept: *` header instead of `*/*`, which overpass-api.de now
+// rejects outright with 406 Not Acceptable. Rather than depend on a small,
+// seemingly unmaintained wrapper for what's just a POST endpoint, call it
+// directly so we control the headers.
 async function overpassJsonWithRetry(query, opts, retries = 3, pauseMs = 2000) {
   for (let attempt = 0; ; attempt++) {
-    try {
-      return await overpassJson(query, opts);
-    } catch (e) {
-      const retryable = e instanceof OverpassRateLimitError || e instanceof OverpassGatewayTimeoutError;
-      if (!retryable || attempt >= retries) throw e;
-      await new Promise(r => setTimeout(r, pauseMs));
+    const resp = await fetch(opts.endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json',
+        'User-Agent': opts.userAgent,
+      },
+      body: `data=${encodeURIComponent(query)}`,
+    });
+    if (resp.ok) return resp.json();
+    const retryable = resp.status === 429 || resp.status === 504;
+    if (!retryable || attempt >= retries) {
+      const text = await resp.text().catch(() => '');
+      const err = new Error(`Overpass ${resp.status} ${resp.statusText}${text ? `: ${text.slice(0, 300)}` : ''}`);
+      err.status = resp.status;
+      throw err;
     }
+    await new Promise(r => setTimeout(r, pauseMs));
   }
 }
 const DDG = require('duck-duck-scrape');
@@ -351,12 +363,7 @@ app.post('/api/overpass', async (req, res) => {
 
   try {
     const data = await enqueueOverpass(async () => {
-      // overpassJson() resolves the parsed JSON body directly (overpass()
-      // resolves the raw, unparsed fetch Response). Rate-limit (429) and
-      // gateway-timeout (504) retries are handled by overpassJsonWithRetry
-      // since the library only throws distinct error classes for those, it
-      // doesn't retry on its own. Needs a proper User-Agent, same courtesy
-      // requirement as Nominatim.
+      // Needs a proper User-Agent, same courtesy requirement as Nominatim.
       return overpassJsonWithRetry(query, {
         endpoint: 'https://overpass-api.de/api/interpreter',
         userAgent: 'SceneScout/0.1 (hackathon project; contact: udaya@example.com)',

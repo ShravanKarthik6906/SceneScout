@@ -14,7 +14,6 @@
     "leaflet": "1.9.4",
     "leaflet-ajax": "^2.1.0",
     "maplibre-gl": "4.7.1",
-    "overpass-ts": "^4.3.8",
     "serve": "^14.2.0",
     "three": "0.160.0"
   }
