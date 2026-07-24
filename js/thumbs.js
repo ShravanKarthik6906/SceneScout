@@ -25,9 +25,29 @@ function bgGradient(ctx, w, h, accent) {
   ctx.fillRect(0, 0, w, h);
 }
 
+// Dynamic (non-curated) locations — natural features from NaturalFeatures.js
+// — have no floorplan/palette, only _icon/_color/_label. Draw a plain icon
+// card for those instead of attempting a floor plan that doesn't exist.
+function drawIconThumb(listing, ctx, W, H) {
+  const accent = listing._color || '#7a8a99';
+  bgGradient(ctx, W, H, accent);
+  ctx.font = `${Math.round(Math.min(W, H) * 0.32)}px system-ui`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(listing._icon || '📍', W / 2, H / 2 - 6);
+  if (listing._label) {
+    ctx.font = '600 12px system-ui';
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.fillText(listing._label, W / 2, H - 14);
+  }
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+}
+
 export function drawPlanThumb(listing, canvas) {
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
+  if (!listing.floorplan) return drawIconThumb(listing, ctx, W, H);
   const fp = listing.floorplan;
   const b = planBounds(fp);
   const accent = listing.palette.accent;
@@ -76,6 +96,7 @@ function iso(x, z, y, s, ox, oy) {
 export function drawIsoHero(listing, canvas) {
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
+  if (!listing.floorplan) return drawIconThumb(listing, ctx, W, H);
   const fp = listing.floorplan;
   const b = planBounds(fp);
   const accent = listing.palette.accent;
