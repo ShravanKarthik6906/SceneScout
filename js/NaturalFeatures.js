@@ -129,6 +129,8 @@ function toFeatureLocation(el, feature, name, lat, lng, diameterFt) {
                 power: { score: 10, note: 'No power on-site — bring generators/batteries' },
                 permit: { score: 40, note: 'Public land may require a shoot permit — check local authority' },
             },
+            // Same blend catalog.js's enrich() uses: (parking + accessibility + power + permit) / 4.
+            productionFriendliness: 38,
             nearestAirport: { code: '—', mi: '—', name: 'Not calculated for natural features yet' },
             amenities: { equipment: 'Unknown', hotels: 'Unknown', dining: 'Unknown' },
         },

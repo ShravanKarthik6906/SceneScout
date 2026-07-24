@@ -23,8 +23,13 @@ function visualMatch(loc, state, q) {
   let score = 70, conf = 'medium', bits = [];
 
   if (wantedTypes.size) {
-    if (wantedTypes.has(loc.type)) { score = 92; conf = 'high'; bits.push(`is a ${TYPES[loc.type].label.toLowerCase()}`); }
-    else { score = 34; conf = 'high'; bits.push(`is a ${TYPES[loc.type].label.toLowerCase()}, not the requested type`); }
+    // Dynamic natural-feature results (lakes, rivers, ...) carry a type slug
+    // that isn't one of catalog.js's fixed TYPES keys — fall back to their
+    // own _label, same convention app.js's typeInfo() uses.
+    const t = TYPES[loc.type];
+    const typeLabel = (t ? t.label : loc._label || 'location').toLowerCase();
+    if (wantedTypes.has(loc.type)) { score = 92; conf = 'high'; bits.push(`is a ${typeLabel}`); }
+    else { score = 34; conf = 'high'; bits.push(`is a ${typeLabel}, not the requested type`); }
   }
 
   // style / mood keyword overlap against tags + description
@@ -45,6 +50,8 @@ function visualMatch(loc, state, q) {
 }
 
 function lightingMatch(loc, state, q) {
+  // Natural-feature results have no modeled light condition at all.
+  if (!loc.light) return { score: 60, note: 'Natural light not modeled for this feature.', confidence: 'low' };
   const desired = (q && q.light) || (state.light !== 'any' ? state.light : null);
   const rank = { controlled: 0, moderate: 1, abundant: 2 };
   if (!desired) return { score: 78, note: `${cap(loc.light)} natural light.`, confidence: 'low' };
@@ -56,7 +63,10 @@ function lightingMatch(loc, state, q) {
 
 function spaceMatch(loc, state, q) {
   const min = Math.max(state.minSqft || 0, (q && q.minSqft) || 0);
-  if (!min) return { score: 82, note: `${loc.sqft.toLocaleString()} ft² · fits ~${loc.intel.crewCapacity} crew.`, confidence: 'medium' };
+  if (!min) {
+    const crewNote = loc.intel.crewCapacity != null ? ` · fits ~${loc.intel.crewCapacity} crew` : '';
+    return { score: 82, note: `${loc.sqft.toLocaleString()} ft²${crewNote}.`, confidence: 'medium' };
+  }
   if (loc.sqft >= min) return { score: 94, note: `${loc.sqft.toLocaleString()} ft² clears your ${min.toLocaleString()} ft² floor.`, confidence: 'high' };
   const ratio = loc.sqft / min;
   return { score: clamp(ratio * 70), note: `${loc.sqft.toLocaleString()} ft² is under your ${min.toLocaleString()} ft² target.`, confidence: 'high' };
