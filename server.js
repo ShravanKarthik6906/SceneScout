@@ -277,7 +277,7 @@ app.get('/api/location-photos', async (req, res) => {
 
   try {
     const result = await enqueuePhoto(() =>
-      DDG.images(trimmed, { safeSearch: DDG.SafeSearchType.MODERATE })
+      DDG.searchImages(trimmed, { safeSearch: DDG.SafeSearchType.MODERATE })
     );
     const simplified = (result.results || []).slice(0, 12).map(r => ({
       image: r.image, thumbnail: r.thumbnail, title: r.title,

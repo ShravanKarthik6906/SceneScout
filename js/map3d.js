@@ -9,8 +9,8 @@
 
 import { TYPES } from './catalog.js';
 
-const MAPLIBRE_JS = 'https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js';
-const MAPLIBRE_CSS = 'https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css';
+const MAPLIBRE_JS = '/vendor/maplibre-gl/maplibre-gl.js';
+const MAPLIBRE_CSS = '/vendor/maplibre-gl/maplibre-gl.css';
 const STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 
 let map = null;         // maplibre map
