@@ -6,7 +6,19 @@ import { TYPES } from './data.js';
 let map, radiusCircle, centerMarker;
 const markers = new Map(); // listing id -> L.circleMarker
 
-export function initMap({ onCenterChange, onMarkerClick }) {
+export async function initMap({ onCenterChange, onMarkerClick, locations = [] }) {
+  // Geocode each location using its address to ensure up‑to‑date coordinates.
+  // locations defaults to [] so a missing/undefined arg can't crash this —
+  // Promise.all([]) resolves immediately instead of throwing.
+  await Promise.all(locations.map(async (loc) => {
+    const response = await fetch(`/api/geocode?q=${encodeURIComponent(loc.address)}`);
+    const data = await response.json();
+    if (data && data.length > 0) {
+      loc.lat = parseFloat(data[0].lat);
+      loc.lng = parseFloat(data[0].lon);
+    }
+  }));
+
   map = L.map('map2d', { zoomControl: true, attributionControl: true })
     .setView([34.04, -118.25], 10);
 
@@ -26,6 +38,13 @@ export function initMap({ onCenterChange, onMarkerClick }) {
 }
 
 export function updateMap(state, results, allLocations) {
+  // Guard: if initMap crashed or hasn't finished, map is undefined — bail
+  // instead of throwing on addTo/addLayer.
+  if (!map) {
+    console.warn('updateMap called before map was initialized — skipping.');
+    return;
+  }
+
   const { center, radiusMi } = state;
   const radiusM = radiusMi * 1609.34;
 
@@ -45,11 +64,12 @@ export function updateMap(state, results, allLocations) {
   const resultIds = new Set(results.map(r => r.id));
   for (const loc of allLocations) {
     const inResults = resultIds.has(loc.id);
-    const color = TYPES[loc.type].color;
+    const t = TYPES[loc.type] || { icon: loc._icon || '📍', label: loc._label || 'Location', color: loc._color || '#7a8a99' };
+    const color = t.color;
     let m = markers.get(loc.id);
     if (!m) {
       m = L.circleMarker([loc.lat, loc.lng], { radius: 9, weight: 2 }).addTo(map);
-      m.bindTooltip(`${TYPES[loc.type].icon} ${loc.name}`, { direction: 'top', offset: [0, -8] });
+      m.bindTooltip(`${t.icon} ${loc.name}`, { direction: 'top', offset: [0, -8] });
       m.on('click', () => map._onMarkerClick(loc.id));
       markers.set(loc.id, m);
     }
@@ -60,10 +80,12 @@ export function updateMap(state, results, allLocations) {
 }
 
 export function flyToListing(loc) {
+  if (!map) return;
   map.flyTo([loc.lat, loc.lng], 14, { duration: 0.8 });
 }
 
 export function fitToRadius(state) {
+  if (!map) return;
   const r = state.radiusMi * 1609.34;
   map.fitBounds(L.latLng(state.center.lat, state.center.lng).toBounds(r * 2), { padding: [20, 20] });
 }

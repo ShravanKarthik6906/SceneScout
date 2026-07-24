@@ -1,6 +1,6 @@
 // Production intelligence: real solar math (sunrise / sunset / golden hour /
 // blue hour / sun position) computed locally for any lat/lng/date, plus keyless
-// geocoding (OpenStreetMap Nominatim) and weather (Open-Meteo). The sun math is
+// geocoding (proxied to LocationIQ) and weather (Open-Meteo). The sun math is
 // a compact port of SunCalc (Vladimir Agafonkin, BSD-2) and is genuinely
 // accurate — nothing simulated here.
 
@@ -105,10 +105,9 @@ export function compass(deg) {
 }
 
 // ----------------------------------------------------------- geocoding
-// OpenStreetMap Nominatim — keyless. City / ZIP / address / landmark.
+// Proxied to LocationIQ via our own server (/api/geocode) — see server.js.
 export async function geocode(query) {
-  const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=us&q='
-    + encodeURIComponent(query);
+  const url = `/api/geocode?q=${encodeURIComponent(query)}`;
   try {
     const res = await fetch(url, { headers: { 'Accept-Language': 'en' } });
     if (!res.ok) return null;
@@ -124,7 +123,38 @@ export async function geocode(query) {
   }
 }
 
-// ----------------------------------------------------------- weather
+// ------------------------------------------------------------ location photos
+// Real photos of a location via DuckDuckGo image search, proxied through our
+// own server (duck-duck-scrape) to keep the request server-side.
+export async function fetchLocationPhotos(query) {
+  try {
+    const res = await fetch(`/api/location-photos?q=${encodeURIComponent(query)}`);
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
+}
+
+// -------------------------------------------------------- reverse geocoding
+// Used by "explore the globe" mode: turns a clicked lat/lng into a place
+// name via our /api/reverse-geocode proxy (LocationIQ).
+export async function reverseGeocode(lat, lng) {
+  try {
+    const res = await fetch(`/api/reverse-geocode?lat=${lat}&lng=${lng}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data) return null;
+    return {
+      label: data.display_name ? data.display_name.split(',').slice(0, 3).join(',').trim() : `${lat.toFixed(3)}, ${lng.toFixed(3)}`,
+      raw: data,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ----------------------------------------------------------------- weather
 const WMO = {
   0: ['Clear', '☀️'], 1: ['Mainly clear', '🌤'], 2: ['Partly cloudy', '⛅'], 3: ['Overcast', '☁️'],
   45: ['Fog', '🌫'], 48: ['Rime fog', '🌫'],

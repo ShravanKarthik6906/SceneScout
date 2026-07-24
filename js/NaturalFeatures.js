@@ -1,0 +1,139 @@
+// Finds real-world natural/geographic features (lakes, rivers, beaches,
+// mountains, forests, whatever) near a point using OpenStreetMap's Overpass
+// API. Unlike a hardcoded "find lakes" module, the OSM tags to search for
+// come from Groq's understanding of the query (see server.js's
+// PARSE_SYSTEM_PROMPT) — this module just executes whatever tag query it's
+// given and shapes the results into location-like objects the rest of the
+// app already knows how to render.
+
+const MI_TO_M = 1609.34;
+
+function haversineFt(lat1, lng1, lat2, lng2) {
+    const R = 20902231; // Earth radius in feet
+    const toR = Math.PI / 180;
+    const dLat = (lat2 - lat1) * toR, dLng = (lng2 - lng1) * toR;
+    const a = Math.sin(dLat / 2) ** 2 +
+        Math.cos(lat1 * toR) * Math.cos(lat2 * toR) * Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// Rough "diameter" of an area feature: the larger of its N-S/E-W extents,
+// in feet, from its bounding box. Not meaningful for point features (peaks,
+// waterfalls) — those are skipped by the size filter automatically since
+// point elements have no `bounds`.
+function approxDiameterFt(bounds) {
+    const h = haversineFt(bounds.minlat, bounds.minlon, bounds.maxlat, bounds.minlon);
+    const w = haversineFt(bounds.minlat, bounds.minlon, bounds.minlat, bounds.maxlon);
+    return Math.max(h, w);
+}
+
+// Builds an Overpass QL query for arbitrary tag(s) and element type(s).
+// tags: [{key, value}]. elementTypes: subset of ['node','way','relation'].
+function buildOverpassQuery(center, radiusM, tags, elementTypes) {
+    const tagFilter = tags.map(t => `["${t.key}"="${t.value}"]`).join('');
+    const types = elementTypes && elementTypes.length ? elementTypes : ['node', 'way', 'relation'];
+    const clauses = types
+        .map(t => `  ${t}${tagFilter}(around:${radiusM},${center.lat},${center.lng});`)
+        .join('\n');
+    return `[out:json][timeout:25];\n(\n${clauses}\n);\nout body geom;`;
+}
+
+// feature: { label, icon, osmTags: [{key,value}], elementTypes: string[], approxSizeFt: number|null }
+// center: {lat,lng}. radiusMi: search radius.
+export async function findNaturalFeatures(center, radiusMi, feature) {
+    if (!feature || !Array.isArray(feature.osmTags) || !feature.osmTags.length) return [];
+
+    const radiusM = Math.round(radiusMi * MI_TO_M);
+    const query = buildOverpassQuery(center, radiusM, feature.osmTags, feature.elementTypes);
+
+    let data;
+    try {
+        const res = await fetch('/api/overpass', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query }),
+        });
+        if (!res.ok) throw new Error(`overpass proxy failed: ${res.status}`);
+        data = await res.json();
+    } catch (e) {
+        console.warn('[naturalFeatures] Overpass query failed:', e.message);
+        return [];
+    }
+
+    const elements = Array.isArray(data.elements) ? data.elements : [];
+    const results = [];
+    const toleranceFt = 200;
+
+    for (const el of elements) {
+        let lat, lng, diameterFt = null;
+
+        if (el.type === 'node' && typeof el.lat === 'number') {
+            // point feature — no size concept, always passes any size filter
+            lat = el.lat; lng = el.lon;
+        } else if (el.bounds) {
+            lat = (el.bounds.minlat + el.bounds.maxlat) / 2;
+            lng = (el.bounds.minlon + el.bounds.maxlon) / 2;
+            diameterFt = approxDiameterFt(el.bounds);
+            if (feature.approxSizeFt != null && Math.abs(diameterFt - feature.approxSizeFt) > toleranceFt) continue;
+        } else {
+            continue; // no usable coordinates
+        }
+
+        const name = el.tags?.name || `Unnamed ${feature.label.toLowerCase()}`;
+        results.push(toFeatureLocation(el, feature, name, lat, lng, diameterFt));
+    }
+
+    return results;
+}
+
+// Slugify a label into a stable, TYPES-safe key, e.g. "Mountain Peak" -> "mountain-peak".
+function slugify(label) {
+    return label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'feature';
+}
+
+// Builds a pseudo-"location" object matching the shape the rest of the app
+// expects (rate, sqft, intel, reviews, tags) so existing card/detail
+// rendering works without modification. type is a dynamic slug rather than
+// one of catalog.js's fixed TYPES keys — render()/openDetail() fall back to
+// _icon/_label/_color (set below) when TYPES[loc.type] doesn't exist, since
+// this feature type was never predefined.
+function toFeatureLocation(el, feature, name, lat, lng, diameterFt) {
+    const id = `feat-${slugify(feature.label)}-${el.type}-${el.id}`;
+    const sizeNote = diameterFt ? `roughly ${Math.round(diameterFt)} ft across` : 'a point feature (no area)';
+    return {
+        id, name,
+        type: slugify(feature.label),   // dynamic — not in catalog.js's TYPES
+        _icon: feature.icon || '📍',
+        _label: feature.label,
+        _color: '#5a8a7a',
+        lat, lng,
+        address: `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+        neighborhood: el.tags?.['addr:city'] || 'Unincorporated area',
+        sqft: diameterFt ? Math.round(Math.PI * (diameterFt / 2) ** 2) : 0,
+        ceilingFt: null,
+        rate: 0,
+        desc: `A ${feature.label.toLowerCase()}, ${sizeNote}. Sourced from OpenStreetMap — ` +
+            `verify public access and any permit requirements before shooting.`,
+        tags: ['natural feature', feature.label.toLowerCase(), 'outdoor', 'verify public access'],
+        intel: {
+            crewCapacity: null,
+            windows: [],
+            factors: {
+                parking: { score: 50, note: 'Unverified — no data source for this yet' },
+                accessibility: { score: 50, note: 'Terrain varies — verify locally' },
+                noise: { score: 70, note: 'Likely quiet outdoor setting, unverified' },
+                privacy: { score: 30, note: 'Public land — expect other visitors' },
+                power: { score: 10, note: 'No power on-site — bring generators/batteries' },
+                permit: { score: 40, note: 'Public land may require a shoot permit — check local authority' },
+            },
+            nearestAirport: { code: '—', mi: '—', name: 'Not calculated for natural features yet' },
+            amenities: { equipment: 'Unknown', hotels: 'Unknown', dining: 'Unknown' },
+        },
+        reviews: {
+            rating: 0, count: 0,
+            summary: 'No review data available for natural features yet.',
+            positives: [],
+            considerations: ['Verify public access and permit requirements before scouting a shoot here.'],
+        },
+    };
+}
