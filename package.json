@@ -1,0 +1,18 @@
+{
+  "name": "photoscout-clean",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "cors": "^2.8.5",
+    "duck-duck-scrape": "^2.2.7",
+    "express": "^4.18.2",
+    "leaflet-ajax": "^2.1.0",
+    "overpass-ts": "^4.3.8",
+    "serve": "^14.2.0"
+  }
+}

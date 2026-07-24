@@ -1,21 +1,25 @@
 // Natural-language query parser. Turns a prompt like "modern industrial
 // warehouse with large windows near downtown Chicago under $500/day" into a
 // structured intent object that drives the filters and the suitability score.
-// Fully offline — a rules/lexicon parser, no API. In production this is where
-// an LLM call would slot in; the downstream code only consumes the structured
-// result, so the swap is isolated.
+//
+// parseQuery() now calls a Groq-backed /api/parse-query endpoint for real
+// language understanding (handles things like "somewhere near water" or
+// "moody and cinematic" that the old lexicon-only matcher couldn't). If
+// Groq is unavailable (no key, network error, bad response), it falls back
+// to the original offline rules parser (parseQueryLocal) so search never
+// breaks entirely.
 
 import { TYPES } from './catalog.js';
 
 const TYPE_LEXICON = {
-  studio:     ['studio', 'sound stage', 'soundstage', 'stage', 'cyc', 'photo studio', 'shooting space'],
-  loft:       ['loft', 'industrial space', 'brick loft', 'artist loft'],
-  warehouse:  ['warehouse', 'industrial warehouse', 'factory', 'hangar', 'garage'],
-  house:      ['house', 'home', 'bungalow', 'craftsman', 'cottage', 'residence', 'residential', 'suburban', 'ranch', 'apartment'],
-  rooftop:    ['rooftop', 'roof deck', 'terrace', 'roof top', 'penthouse'],
+  studio: ['studio', 'sound stage', 'soundstage', 'stage', 'cyc', 'photo studio', 'shooting space'],
+  loft: ['loft', 'industrial space', 'brick loft', 'artist loft'],
+  warehouse: ['warehouse', 'industrial warehouse', 'factory', 'hangar', 'garage'],
+  house: ['house', 'home', 'bungalow', 'craftsman', 'cottage', 'residence', 'residential', 'suburban', 'ranch', 'apartment'],
+  rooftop: ['rooftop', 'roof deck', 'terrace', 'roof top', 'penthouse'],
   storefront: ['storefront', 'bar', 'cafe', 'coffee shop', 'coffee', 'diner', 'restaurant', 'shop', 'retail', 'pub', 'saloon'],
-  gallery:    ['gallery', 'white box', 'white-box', 'art space', 'showroom'],
-  estate:     ['estate', 'mansion', 'ballroom', 'manor', 'villa', 'chateau', 'palace'],
+  gallery: ['gallery', 'white box', 'white-box', 'art space', 'showroom'],
+  estate: ['estate', 'mansion', 'ballroom', 'manor', 'villa', 'chateau', 'palace'],
 };
 
 // mood / architectural style vocabulary — matched against tags + descriptions
@@ -37,7 +41,9 @@ function matchAny(text, phrases) {
   return null;
 }
 
-export function parseQuery(raw) {
+// The original rules-based parser — kept as a synchronous fallback for when
+// Groq is unavailable (no key set, network error, rate limit, bad JSON, etc).
+function parseQueryLocal(raw) {
   const text = ' ' + raw.toLowerCase().trim() + ' ';
   const out = {
     raw: raw.trim(),
@@ -48,6 +54,7 @@ export function parseQuery(raw) {
     maxRate: null,        // hourly
     radiusMi: null,
     locationText: null,
+    naturalFeature: null, // local parser can't detect these — only Groq does
     interpreted: [],      // human-readable chips
   };
   if (!out.raw) return out;
@@ -111,13 +118,64 @@ export function parseQuery(raw) {
   }
 
   // ---- build the "interpreted as" chips
-  for (const t of out.types) out.interpreted.push(`${TYPES[t].icon} ${TYPES[t].label}`);
-  if (out.light) out.interpreted.push(`💡 ${out.light} light`);
-  if (out.minSqft) out.interpreted.push(`📐 ${out.minSqft.toLocaleString()}+ ft²`);
-  if (out.maxRate) out.interpreted.push(`💵 ≤ $${out.maxRate}/hr`);
-  if (out.radiusMi) out.interpreted.push(`📍 ${out.radiusMi} mi radius`);
-  if (out.locationText) out.interpreted.push(`🗺 ${out.locationText}`);
-  for (const s of out.styleWords.slice(0, 4)) out.interpreted.push(`✨ ${s}`);
+  out.interpreted = buildInterpretedChips(out);
 
   return out;
+}
+
+// Builds the "interpreted as" chips array from a parsed-filter object,
+// regardless of whether it came from Groq or the local rules parser.
+function buildInterpretedChips(out) {
+  const chips = [];
+  for (const t of out.types) if (TYPES[t]) chips.push(`${TYPES[t].icon} ${TYPES[t].label}`);
+  if (out.light) chips.push(`💡 ${out.light} light`);
+  if (out.minSqft) chips.push(`📐 ${out.minSqft.toLocaleString()}+ ft²`);
+  if (out.maxRate) chips.push(`💵 ≤ $${out.maxRate}/hr`);
+  if (out.radiusMi) chips.push(`📍 ${out.radiusMi} mi radius`);
+  if (out.locationText) chips.push(`🗺 ${out.locationText}`);
+  for (const s of out.styleWords.slice(0, 4)) chips.push(`✨ ${s}`);
+  return chips;
+}
+
+// Public entry point. Tries Groq first (real language understanding — "a
+// place near water", "somewhere moody and cinematic" work, not just exact
+// lexicon matches). Falls back to the offline rules parser on any failure
+// (no key set, network error, rate limit, malformed response) so search
+// never breaks entirely if Groq is down or unconfigured.
+export async function parseQuery(raw) {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return parseQueryLocal(raw || '');
+
+  try {
+    const res = await fetch('/api/parse-query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: trimmed }),
+    });
+    if (!res.ok) throw new Error(`parse-query failed: ${res.status}`);
+    const data = await res.json();
+
+    const out = {
+      raw: trimmed,
+      types: new Set(Array.isArray(data.types) ? data.types.filter(t => TYPES[t]) : []),
+      styleWords: Array.isArray(data.styleWords) ? data.styleWords : [],
+      light: data.light || null,
+      minSqft: typeof data.minSqft === 'number' ? data.minSqft : null,
+      maxRate: typeof data.maxRate === 'number' ? data.maxRate : null,
+      radiusMi: typeof data.radiusMi === 'number' ? data.radiusMi : null,
+      locationText: data.locationText || null,
+      naturalFeature: (data.naturalFeature && Array.isArray(data.naturalFeature.osmTags) && data.naturalFeature.osmTags.length)
+        ? data.naturalFeature
+        : null,
+      interpreted: [],
+    };
+    out.interpreted = buildInterpretedChips(out);
+    if (out.naturalFeature) {
+      out.interpreted.push(`${out.naturalFeature.icon || '📍'} ${out.naturalFeature.label}`);
+    }
+    return out;
+  } catch (e) {
+    console.warn('[nlp] Groq parse failed, falling back to local parser:', e.message);
+    return parseQueryLocal(raw);
+  }
 }

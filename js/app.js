@@ -8,10 +8,48 @@ import { drawPlanThumb, drawIsoHero } from './thumbs.js';
 import { openTour } from './tour.js';
 import { parseQuery } from './nlp.js';
 import { computeSuitability } from './score.js';
-import { sunTimes, sunPosition, fmtTime, fmtTimeAt, tzAbbr, compass, geocode, forecast, weatherText } from './intel.js';
-import { ensure3D, resize3D, update3D, flyHome3D, flyToListing3D } from './map3d.js';
+import { sunTimes, sunPosition, fmtTime, fmtTimeAt, tzAbbr, compass, geocode, forecast, weatherText, fetchLocationPhotos, reverseGeocode } from './intel.js';
+import { ensure3D, resize3D, update3D, flyHome3D, flyToListing3D, setGlobeMode, flyToGlobalView } from './map3d.js';
+import { findNaturalFeatures } from './NaturalFeatures.js';
 
 const KEY_STORAGE = 'scenescout-gmaps-key';
+// Free public client token — register at mapillary.com/dashboard.
+// This is a client-side public token by design, unlike the Groq/LocationIQ
+// keys which stay server-side only.
+const MAPILLARY_TOKEN = 'YOUR_MAPILLARY_CLIENT_TOKEN';
+let mapillaryViewer = null; // tracks the active viewer instance so we can tear it down cleanly
+
+// This project has no bundler — app.js and its sibling modules are loaded as
+// plain browser ES modules (see the relative './xyz.js' imports throughout).
+// A bare `import ... from 'mapillary-js'` can't resolve here the way it
+// would with Vite/webpack. Instead, lazy-load the library from a CDN the
+// same way map3d.js already does for MapLibre GL — script/link tags, then
+// use the global `mapillary` object the UMD build attaches to `window`.
+const MAPILLARY_JS = 'https://unpkg.com/mapillary-js@4.1.2/dist/mapillary.js';
+const MAPILLARY_CSS = 'https://unpkg.com/mapillary-js@4.1.2/dist/mapillary.css';
+let mapillaryLoadPromise = null;
+
+function loadMapillaryLib() {
+  if (window.mapillary) return Promise.resolve();
+  if (mapillaryLoadPromise) return mapillaryLoadPromise;
+  mapillaryLoadPromise = new Promise((resolve, reject) => {
+    const css = document.createElement('link');
+    css.rel = 'stylesheet'; css.href = MAPILLARY_CSS;
+    document.head.appendChild(css);
+    const s = document.createElement('script');
+    s.src = MAPILLARY_JS;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('mapillary-js load failed'));
+    document.head.appendChild(s);
+  });
+  return mapillaryLoadPromise;
+}
+
+// Dynamic natural-feature results (lakes, rivers, mountains, whatever Groq
+// identifies) live outside LOCATIONS since they're fetched live from
+// OpenStreetMap per search, not part of the curated catalog.
+let dynamicLocations = [];
+let dynamicSearchKey = ''; // dedupe: avoid re-fetching for an unchanged view
 
 const state = {
   center: { lat: CENTERS[0].lat, lng: CENTERS[0].lng },
@@ -23,6 +61,7 @@ const state = {
   light: 'any',
   sort: 'match',
   query: null,     // parsed NLP intent, feeds the suitability score
+  dynamicFeature: null, // Groq-detected natural feature spec (lake/river/etc), or null
   view: '2d',
 };
 
@@ -43,12 +82,29 @@ function haversineMi(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+// computeSuitability was written for curated catalog locations; wrap it so
+// a lake (or any future non-standard location shape) can't crash search —
+// falls back to a neutral score instead of throwing.
+function safeSuitability(loc, st, query) {
+  try {
+    return computeSuitability(loc, st, query);
+  } catch (e) {
+    console.warn('[score] computeSuitability failed for', loc.id, e.message);
+    return { overall: 50, confidence: 'low', breakdown: [] };
+  }
+}
+
 function runSearch() {
   const results = [];
-  for (const loc of LOCATIONS) {
+  // Dynamic feature results (from Groq's natural-feature detection) are
+  // included whenever one is active — independent of the building-type chips,
+  // since "lake" or "mountain" isn't a concept those chips represent.
+  const candidates = state.dynamicFeature ? [...LOCATIONS, ...dynamicLocations] : LOCATIONS;
+
+  for (const loc of candidates) {
     const distMi = haversineMi(state.center.lat, state.center.lng, loc.lat, loc.lng);
     if (distMi > state.radiusMi) continue;
-    const suit = computeSuitability(loc, state, state.query);
+    const suit = safeSuitability(loc, state, state.query);
     results.push({ ...loc, distMi, score: suit.overall, suit });
   }
   const sorters = {
@@ -61,11 +117,40 @@ function runSearch() {
   return results;
 }
 
+// Fetches results for the current dynamic feature (if any) + center/radius,
+// unless we've already fetched for this exact view. Fire-and-forget from
+// render() — re-renders once results land rather than blocking the current
+// render on a network call.
+async function refreshDynamicFeatureIfNeeded() {
+  if (!state.dynamicFeature) { dynamicLocations = []; dynamicSearchKey = ''; return; }
+
+  const key = JSON.stringify(state.dynamicFeature) +
+    `|${state.center.lat.toFixed(3)},${state.center.lng.toFixed(3)},${state.radiusMi}`;
+  if (key === dynamicSearchKey) return; // already fetched for this view
+  dynamicSearchKey = key;
+
+  const found = await findNaturalFeatures(state.center, state.radiusMi, state.dynamicFeature);
+  // Guard against a stale response landing after the user changed the query
+  // or moved again — only apply if we're still looking at the same view.
+  if (dynamicSearchKey === key) {
+    dynamicLocations = found;
+    render();
+  }
+}
+
+// TYPES only covers curated building categories; dynamic features (lake,
+// river, mountain, ...) carry their own display info on the object itself.
+// Every place that needs a type's icon/label/color should go through this.
+function typeInfo(loc) {
+  return TYPES[loc.type] || { icon: loc._icon || '📍', label: loc._label || 'Location', color: loc._color || '#7a8a99' };
+}
+
 // ---------------------------------------------------------------- results
 function render() {
+  refreshDynamicFeatureIfNeeded(); // fire-and-forget; re-renders itself once data lands
   const results = runSearch();
   document.getElementById('results-meta').innerHTML =
-    `<b>${results.length}</b> of ${LOCATIONS.length} locations within ${state.radiusMi} mi of ${escapeHtml(state.centerName)}`;
+    `<b>${results.length}</b> of ${LOCATIONS.length + dynamicLocations.length} locations within ${state.radiusMi} mi of ${escapeHtml(state.centerName)}`;
 
   const list = document.getElementById('results');
   list.innerHTML = '';
@@ -73,7 +158,7 @@ function render() {
     list.innerHTML = `<div class="empty">No locations in this radius.<br>Widen the radius, search another city above, or click the map to move the center.</div>`;
   }
   for (const loc of results) {
-    const t = TYPES[loc.type];
+    const t = typeInfo(loc);
     const card = document.createElement('article');
     card.className = 'card';
     card.innerHTML = `
@@ -91,12 +176,18 @@ function render() {
           <span>${loc.distMi.toFixed(1)} mi</span>
         </div>
       </div>`;
-    drawPlanThumb(loc, card.querySelector('canvas'));
+    // thumbs.js was written for curated floor-plan locations; guard so a
+    // dynamic feature (no floor plan) can't crash the whole results render.
+    try {
+      drawPlanThumb(loc, card.querySelector('canvas'));
+    } catch (e) {
+      console.warn('[thumbs] drawPlanThumb failed for', loc.id, e.message);
+    }
     card.onclick = () => openDetail(loc);
     list.appendChild(card);
   }
 
-  updateMap(state, results, LOCATIONS);
+  updateMap(state, results, [...LOCATIONS, ...dynamicLocations]);
   if (state.view === '3d') update3D(state.center, results);
 }
 
@@ -108,6 +199,7 @@ function applyParsedToState(q) {
   state.minSqft = q.minSqft || 0;
   state.maxRate = q.maxRate ?? Infinity;
   if (q.radiusMi) state.radiusMi = q.radiusMi;
+  state.dynamicFeature = q.naturalFeature || null;
   syncFilterControls();
 }
 
@@ -136,11 +228,38 @@ function renderInterpreted(q) {
   box.innerHTML = `<div class="ai-interpreted-head">AI read your brief as</div><div class="ai-chips">${chips}</div>`;
 }
 
+async function getAIResponse(text) {
+  const groqKey = localStorage.getItem('groq-api-key');
+  if (!groqKey) return;
+  try {
+    const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${groqKey}`,
+      },
+      body: JSON.stringify({
+        model: 'llama3-8b-8192',
+        messages: [{ role: 'user', content: text }],
+        temperature: 0.7,
+        max_tokens: 500,
+      }),
+    });
+    const data = await resp.json();
+    const msg = data?.choices?.[0]?.message?.content || '';
+    const outDiv = document.getElementById('ai-response');
+    if (outDiv) outDiv.textContent = msg;
+  } catch (e) {
+    console.error('GROQ request failed', e);
+  }
+}
+
 async function runAISearch(text) {
-  const q = parseQuery(text);
+  const q = await parseQuery(text);
   applyParsedToState(q);
   renderInterpreted(q);
 
+  // If a location is specified, geocode and move the map center
   if (q.locationText) {
     setGeoStatus(`Locating “${q.locationText}”…`);
     const hit = await geocode(q.locationText);
@@ -149,6 +268,8 @@ async function runAISearch(text) {
   }
   render();
   if (state.view === '3d') flyHome3D(state.center);
+  // After rendering results, optionally fetch a detailed AI response via GROQ
+  await getAIResponse(text);
 }
 
 // --------------------------------------------------------------- geocoding
@@ -182,7 +303,7 @@ let currentLoc = null;
 
 function openDetail(loc) {
   currentLoc = loc;
-  const t = TYPES[loc.type];
+  const t = typeInfo(loc);
   document.getElementById('detail').classList.remove('hidden');
   flyToListing(loc);
   if (state.view === '3d') flyToListing3D(loc);
@@ -201,14 +322,19 @@ function openDetail(loc) {
   document.getElementById('detail-tags').innerHTML =
     `<div class="section-h">Features</div>` + loc.tags.map(tag => `<span>${escapeHtml(tag)}</span>`).join('');
 
-  const suit = loc.suit || computeSuitability(loc, state, state.query);
+  const suit = loc.suit || safeSuitability(loc, state, state.query);
   document.getElementById('hero-badge').innerHTML =
     `<b>${suit.overall}%</b><span>match · ${suit.confidence} confidence</span>`;
   renderSuitability(suit);
   renderIntel(loc);
   renderReviews(loc);
 
-  drawIsoHero(loc, document.getElementById('hero-canvas'));
+  try {
+    drawIsoHero(loc, document.getElementById('hero-canvas'));
+  } catch (e) {
+    console.warn('[thumbs] drawIsoHero failed for', loc.id, e.message);
+  }
+  renderPhotos(loc);
   const sv = document.getElementById('sv-panel');
   sv.classList.add('hidden'); sv.innerHTML = '';
   document.querySelector('.modal').scrollTop = 0;
@@ -325,7 +451,55 @@ function renderReviews(loc) {
     </div>`;
 }
 
-// draw a simple sun-arc for the day with the current sun marked
+// Real photos of the location via DuckDuckGo image search. This section
+// isn't part of the original HTML markup, so it's created on first use and
+// reused afterward rather than assuming a container id already exists.
+function getOrCreatePhotosContainer() {
+  let el = document.getElementById('detail-photos');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'detail-photos';
+  el.className = 'detail-photos';
+  // Insert right after the reviews section so it reads naturally in the
+  // existing modal flow; falls back to appending to the modal body if that
+  // anchor isn't found for some reason.
+  const reviews = document.getElementById('detail-reviews');
+  if (reviews && reviews.parentNode) {
+    reviews.parentNode.insertBefore(el, reviews.nextSibling);
+  } else {
+    document.querySelector('.modal')?.appendChild(el);
+  }
+  return el;
+}
+
+async function renderPhotos(loc) {
+  const el = getOrCreatePhotosContainer();
+  el.innerHTML = `<div class="section-h">Photos</div><div class="photos-loading">Searching for real photos…</div>`;
+
+  // Query by name + neighborhood/city for better hit rate than the bare name alone.
+  const query = `${loc.name} ${loc.neighborhood || ''}`.trim();
+  const photos = await fetchLocationPhotos(query);
+
+  // Guard against a stale response landing after the user closed/switched
+  // to a different location's detail view.
+  if (currentLoc !== loc) return;
+
+  if (!photos.length) {
+    el.innerHTML = `<div class="section-h">Photos</div><div class="photos-empty">No photos found for this location.</div>`;
+    return;
+  }
+
+  el.innerHTML = `
+    <div class="section-h">Photos <span class="section-sub">via web image search</span></div>
+    <div class="photos-grid">
+      ${photos.map(p => `
+        <a class="photo-tile" href="${escapeHtml(p.url || p.image)}" target="_blank" rel="noopener" title="${escapeHtml(p.title || '')}">
+          <img src="${escapeHtml(p.thumbnail || p.image)}" alt="${escapeHtml(p.title || loc.name)}" loading="lazy" />
+        </a>`).join('')}
+    </div>`;
+}
+
+
 function drawSunTrack(el, loc, now, s, p) {
   if (!el) return;
   const W = 320, H = 60;
@@ -347,33 +521,94 @@ function drawSunTrack(el, loc, now, s, p) {
 }
 
 // ---------------------------------------------------------------- street view
-function toggleStreetView() {
+// Three-tier fallback:
+//  1. Mapillary — free, no key required from the user, but coverage is
+//     patchy (crowdsourced, dense in some cities, empty elsewhere).
+//  2. Google Street View embed — only if the user added their own Maps key
+//     in Settings (their key, their billing).
+//  3. External "open in Google Maps / Google Earth" links — always works,
+//     just leaves the app.
+async function toggleStreetView() {
   if (!currentLoc) return;
   const panel = document.getElementById('sv-panel');
-  if (!panel.classList.contains('hidden')) { panel.classList.add('hidden'); panel.innerHTML = ''; return; }
+
+  if (!panel.classList.contains('hidden')) {
+    teardownMapillary();
+    panel.classList.add('hidden');
+    panel.innerHTML = '';
+    return;
+  }
+
   panel.classList.remove('hidden');
-  const key = localStorage.getItem(KEY_STORAGE);
   const { lat, lng } = currentLoc;
-  if (key) {
+
+  panel.innerHTML = `<div class="sv-loading">Looking for street-level imagery…</div>`;
+
+  const imageId = await findNearestMapillaryImage(lat, lng).catch(() => null);
+
+  if (imageId) {
+    panel.innerHTML = `<div id="mly-viewer" style="width:100%;height:100%"></div>
+      <div class="sv-note">Street-level imagery via Mapillary (crowdsourced, free) — drag to look around.</div>`;
+    try {
+      await loadMapillaryLib();
+      teardownMapillary(); // in case one is somehow still alive
+      const { Viewer } = window.mapillary;
+      mapillaryViewer = new Viewer({
+        accessToken: MAPILLARY_TOKEN,
+        container: 'mly-viewer',
+        imageId,
+      });
+      return;
+    } catch (e) {
+      console.warn('[streetview] Mapillary viewer failed to init:', e.message);
+      // fall through to the next tier below
+    }
+  }
+
+  // Tier 2: user's own Google Maps key, if they've added one in Settings
+  const googleKey = localStorage.getItem(KEY_STORAGE);
+  if (googleKey) {
     panel.innerHTML = `
-      <iframe src="https://www.google.com/maps/embed/v1/streetview?key=${encodeURIComponent(key)}&location=${lat},${lng}&fov=90"
+      <iframe src="https://www.google.com/maps/embed/v1/streetview?key=${encodeURIComponent(googleKey)}&location=${lat},${lng}&fov=90"
         allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
-      <div class="sv-note">Live Google Street View at this address — drag to look around the exterior.</div>`;
-  } else {
-    panel.innerHTML = `
-      <div class="sv-fallback">
-        <p>Embedded Street View needs a free Google Maps API key — add one in <b>⚙ Settings</b> (enable the “Maps Embed API”).</p>
-        <div class="sv-links">
-          <a class="btn" target="_blank" rel="noopener"
-             href="https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat},${lng}">Open Street View ↗</a>
-          <a class="btn" target="_blank" rel="noopener"
-             href="https://earth.google.com/web/search/${lat},${lng}">Open Google Earth ↗</a>
-        </div>
-      </div>`;
+      <div class="sv-note">No Mapillary coverage here — showing Google Street View instead.</div>`;
+    return;
+  }
+
+  // Tier 3: no free imagery found, no Google key on file — hand off links
+  panel.innerHTML = `
+    <div class="sv-fallback">
+      <p>No free street-level imagery found at this location. Add a Google Maps API key in
+         <b>⚙ Settings</b> for embedded Street View, or open one of these instead:</p>
+      <div class="sv-links">
+        <a class="btn" target="_blank" rel="noopener"
+           href="https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat},${lng}">Open Street View ↗</a>
+        <a class="btn" target="_blank" rel="noopener"
+           href="https://earth.google.com/web/search/${lat},${lng}">Open Google Earth ↗</a>
+      </div>
+    </div>`;
+}
+
+async function findNearestMapillaryImage(lat, lng) {
+  if (!MAPILLARY_TOKEN || MAPILLARY_TOKEN === 'YOUR_MAPILLARY_CLIENT_TOKEN') return null;
+  const res = await fetch(
+    `https://graph.mapillary.com/images?access_token=${MAPILLARY_TOKEN}` +
+    `&fields=id&closeto=${lng},${lat}&radius=100`
+  );
+  if (!res.ok) throw new Error(`Mapillary API error: ${res.status}`);
+  const data = await res.json();
+  return data.data?.[0]?.id || null;
+}
+
+function teardownMapillary() {
+  if (mapillaryViewer) {
+    try { mapillaryViewer.remove(); } catch { /* already gone */ }
+    mapillaryViewer = null;
   }
 }
 
 function closeDetail() {
+  teardownMapillary();
   document.getElementById('detail').classList.add('hidden');
   currentLoc = null;
 }
@@ -382,14 +617,19 @@ function closeDetail() {
 function openSettings() {
   document.getElementById('settings').classList.remove('hidden');
   document.getElementById('api-key-input').value = localStorage.getItem(KEY_STORAGE) || '';
+  document.getElementById('groq-key-input').value = localStorage.getItem('groq-api-key') || '';
 }
 function saveSettings() {
   const v = document.getElementById('api-key-input').value.trim();
   if (v) localStorage.setItem(KEY_STORAGE, v); else localStorage.removeItem(KEY_STORAGE);
+  const groqV = document.getElementById('groq-key-input').value.trim();
+  if (groqV) localStorage.setItem('groq-api-key', groqV); else localStorage.removeItem('groq-api-key');
   document.getElementById('settings').classList.add('hidden');
 }
 
 // ---------------------------------------------------------------- 2D / 3D
+let exploreMode = false; // true when "Explore Globe" is active — map clicks discover a place instead of doing nothing
+
 async function setView(view) {
   if (view === state.view) return;
   state.view = view;
@@ -399,12 +639,99 @@ async function setView(view) {
   if (view === '3d') {
     el3d.style.display = 'block'; el2d.style.visibility = 'hidden';
     const ok = await ensure3D(el3d, (id) => {
-      const loc = LOCATIONS.find(l => l.id === id); if (loc) openDetail(loc);
+      const loc = LOCATIONS.find(l => l.id === id) || dynamicLocations.find(l => l.id === id);
+      if (loc) openDetail(loc);
+    }, (lat, lng) => {
+      if (exploreMode) handleGlobeClick(lat, lng);
     });
     if (ok) { resize3D(); flyHome3D(state.center); update3D(state.center, runSearch()); }
   } else {
     el3d.style.display = 'none'; el2d.style.visibility = 'visible';
   }
+}
+
+// --------------------------------------------------------- explore globe
+// Free-roam mode: pulls the 3D camera out to a whole-Earth globe view and
+// lets the user click anywhere, independent of the curated search radius.
+// A click reverse-geocodes the point and shows real photos of wherever was
+// clicked — separate from the curated-location detail modal, since a random
+// point on Earth has none of that modal's expected data (rate, floor plan,
+// suitability score, etc).
+async function enterExploreMode() {
+  exploreMode = true;
+  document.getElementById('explore-toggle')?.classList.add('active');
+  await setView('3d');
+  setGlobeMode(true);
+  flyToGlobalView();
+}
+
+function exitExploreMode() {
+  exploreMode = false;
+  document.getElementById('explore-toggle')?.classList.remove('active');
+  setGlobeMode(false);
+  closeDiscoverPanel();
+  if (state.view === '3d') flyHome3D(state.center);
+}
+
+function getOrCreateExploreButton() {
+  let btn = document.getElementById('explore-toggle');
+  if (btn) return btn;
+  const toggle = document.getElementById('map-toggle');
+  if (!toggle) return null;
+  btn = document.createElement('button');
+  btn.id = 'explore-toggle';
+  btn.type = 'button';
+  btn.textContent = '🌐 Explore Globe';
+  btn.onclick = () => { exploreMode ? exitExploreMode() : enterExploreMode(); };
+  toggle.appendChild(btn);
+  return btn;
+}
+
+function getOrCreateDiscoverPanel() {
+  let el = document.getElementById('discover-panel');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'discover-panel';
+  el.className = 'discover-panel hidden';
+  document.body.appendChild(el);
+  return el;
+}
+
+function closeDiscoverPanel() {
+  const el = document.getElementById('discover-panel');
+  if (el) { el.classList.add('hidden'); el.innerHTML = ''; }
+}
+
+async function handleGlobeClick(lat, lng) {
+  const panel = getOrCreateDiscoverPanel();
+  panel.classList.remove('hidden');
+  panel.innerHTML = `<div class="discover-loading">Looking up ${lat.toFixed(3)}, ${lng.toFixed(3)}…</div>`;
+
+  const place = await reverseGeocode(lat, lng);
+  const label = place?.label || `${lat.toFixed(3)}, ${lng.toFixed(3)}`;
+  const photos = await fetchLocationPhotos(label);
+
+  panel.innerHTML = `
+    <div class="discover-head">
+      <h3>${escapeHtml(label)}</h3>
+      <button class="discover-close" id="discover-close">✕</button>
+    </div>
+    <div class="discover-coords">${lat.toFixed(4)}, ${lng.toFixed(4)}</div>
+    ${photos.length ? `
+      <div class="photos-grid">
+        ${photos.slice(0, 6).map(p => `
+          <a class="photo-tile" href="${escapeHtml(p.url || p.image)}" target="_blank" rel="noopener">
+            <img src="${escapeHtml(p.thumbnail || p.image)}" alt="${escapeHtml(p.title || label)}" loading="lazy" />
+          </a>`).join('')}
+      </div>` : `<div class="photos-empty">No photos found for this spot.</div>`}
+    <button class="btn" id="discover-search-here">Search near here</button>`;
+
+  document.getElementById('discover-close').onclick = closeDiscoverPanel;
+  document.getElementById('discover-search-here').onclick = () => {
+    moveCenter(lat, lng, label);
+    exitExploreMode();
+    render();
+  };
 }
 
 // -------------------------------------------------------------------- init
@@ -470,15 +797,19 @@ function initFilters() {
   geoInput.closest('.filter-row').appendChild(status);
 }
 
-function init() {
+async function init() {
   initAISearch();
   initFilters();
+  getOrCreateExploreButton();
   syncFilterControls();
+  // Enrich locations with real coordinates via geocoding
+  await enrichLocations();
   initMap({
     onCenterChange: (lat, lng) => { moveCenter(lat, lng); render(); },
     onMarkerClick: (id) => {
       const results = runSearch();
-      const loc = results.find(r => r.id === id) || wrapLoc(LOCATIONS.find(l => l.id === id));
+      const loc = results.find(r => r.id === id)
+        || wrapLoc(LOCATIONS.find(l => l.id === id) || dynamicLocations.find(l => l.id === id));
       if (loc) openDetail(loc);
     },
   });
@@ -508,11 +839,26 @@ function init() {
 
 function wrapLoc(loc) {
   if (!loc) return null;
-  const suit = computeSuitability(loc, state, state.query);
+  const suit = safeSuitability(loc, state, state.query);
   return { ...loc, distMi: haversineMi(state.center.lat, state.center.lng, loc.lat, loc.lng), score: suit.overall, suit };
 }
 
 function barColor(v) { return v >= 75 ? '#7aa874' : v >= 50 ? '#e8b45a' : '#d9744f'; }
+
+// --------------------------------------------------------
+// Enrich locations with real coordinates via geocoding (LocationIQ, via
+// our /api/geocode proxy — see intel.js's geocode()).
+async function enrichLocations() {
+  for (const loc of LOCATIONS) {
+    if (!loc.address) continue;
+    const hit = await geocode(loc.address);
+    if (hit) {
+      loc.lat = hit.lat;
+      loc.lng = hit.lng;
+    }
+  }
+}
+
 function escapeHtml(s) { return String(s).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])); }
 
 init();

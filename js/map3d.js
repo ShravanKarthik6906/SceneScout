@@ -17,6 +17,7 @@ let map = null;         // maplibre map
 let loadPromise = null;
 let markers = [];
 let onMarkerClick = null;
+let onMapClick = null;  // fires on any map click when explore mode is active
 let failed = false;
 
 function loadLib() {
@@ -36,6 +37,7 @@ function loadLib() {
 }
 
 function addBuildingLayer() {
+  if (!map) return;
   if (map.getLayer('ss-3d-buildings')) return;
   // find a label layer to insert beneath, so labels stay on top
   let firstSymbol;
@@ -63,8 +65,11 @@ function addBuildingLayer() {
 }
 
 // container: the DOM element to render into. cb: marker click handler.
-export async function ensure3D(container, cb) {
+// mapClickCb: fires with (lat, lng) on any map click — used by "explore
+// the globe" mode to let the user click anywhere, not just curated markers.
+export async function ensure3D(container, cb, mapClickCb) {
   onMarkerClick = cb;
+  onMapClick = mapClickCb || null;
   if (failed) return false;
   try {
     await loadLib();
@@ -86,21 +91,62 @@ export async function ensure3D(container, cb) {
     // resize once the first frame loads guarantees tiles fill the pane.
     map.on('load', () => map.resize());
     map.on('error', (e) => console.warn('[map3d]', e && e.error && e.error.message));
+    map.on('click', (e) => {
+      if (onMapClick) onMapClick(e.lngLat.lat, e.lngLat.lng);
+    });
+  } else {
+    // container is reused across toggles — always keep the latest callbacks
+    onMarkerClick = cb;
+    onMapClick = mapClickCb || null;
   }
   return true;
 }
 
+// Switches between a flat map and MapLibre's spherical globe projection.
+// Requires MapLibre GL >= 3.6 (this project pins 4.7.1, so it's available).
+export function setGlobeMode(enabled) {
+  if (!map) return;
+  try {
+    map.setProjection({ type: enabled ? 'globe' : 'mercator' });
+  } catch (e) {
+    console.warn('[map3d] setProjection failed (older MapLibre build?):', e.message);
+  }
+}
+
+// Pulls the camera all the way out to a whole-Earth view for free
+// exploration — distinct from flyHome3D, which zooms to a metro-level
+// overview around a specific search center.
+export function flyToGlobalView() {
+  if (!map) return;
+  map.flyTo({ center: [0, 20], zoom: 1.3, pitch: 0, bearing: 0, duration: 2000 });
+}
+
 export function resize3D() { if (map) map.resize(); }
+
+// A location only has valid, renderable coordinates if both lat/lng are
+// real numbers — locations that failed to geocode carry null/undefined,
+// which MapLibre rejects outright ("expected number, found null").
+function hasValidCoords(loc) {
+  return typeof loc.lat === 'number' && !isNaN(loc.lat) &&
+    typeof loc.lng === 'number' && !isNaN(loc.lng);
+}
 
 export function update3D(center, results) {
   if (!map) return;
   markers.forEach(m => m.remove());
   markers = [];
   for (const loc of results) {
+    // Skip locations that failed to geocode — feeding null/undefined lat/lng
+    // into MapLibre throws and can break the whole render pass.
+    if (!hasValidCoords(loc)) {
+      console.warn('[map3d] skipping location with invalid coords:', loc.name || loc.id);
+      continue;
+    }
     const el = document.createElement('div');
     el.className = 'm3d';
-    el.style.setProperty('--c', TYPES[loc.type].color);
-    el.textContent = TYPES[loc.type].icon;
+    const t = TYPES[loc.type] || { icon: loc._icon || '📍', label: loc._label || 'Location', color: loc._color || '#7a8a99' };
+    el.style.setProperty('--c', t.color);
+    el.textContent = t.icon;
     el.title = loc.name;
     el.onclick = () => onMarkerClick && onMarkerClick(loc.id);
     const marker = new maplibregl.Marker({ element: el, anchor: 'bottom' })
@@ -112,11 +158,19 @@ export function update3D(center, results) {
 // Fly the 3D camera to a metro-level overview, orbiting slightly.
 export function flyHome3D(center) {
   if (!map) return;
+  if (!hasValidCoords(center)) {
+    console.warn('[map3d] flyHome3D: invalid center coords, skipping fly');
+    return;
+  }
   map.flyTo({ center: [center.lng, center.lat], zoom: 14.2, pitch: 60, bearing: -22, duration: 1600 });
 }
 
 export function flyToListing3D(loc) {
   if (!map) return;
+  if (!hasValidCoords(loc)) {
+    console.warn('[map3d] flyToListing3D: invalid coords for', loc.name || loc.id);
+    return;
+  }
   map.flyTo({ center: [loc.lng, loc.lat], zoom: 16.6, pitch: 62, bearing: 20, duration: 1600 });
 }
 
