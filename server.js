@@ -237,22 +237,47 @@ function hashQuery(q) {
 // rejects outright with 406 Not Acceptable. Rather than depend on a small,
 // seemingly unmaintained wrapper for what's just a POST endpoint, call it
 // directly so we control the headers.
-async function overpassJsonWithRetry(query, opts, retries = 3, pauseMs = 2000) {
+//
+// overpass-api.de alone is a single shared free instance that times out
+// (504) under its own load. These are all independent, free, community-run
+// mirrors of the same full planet dataset over the same query language —
+// same list overpass-ts itself ships (dist/endpoints.js) — so failing over
+// across them spreads load instead of hammering one server on every retry.
+const OVERPASS_ENDPOINTS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.osm.ch/api/interpreter',
+  'https://overpass.openstreetmap.fr/api/interpreter',
+];
+
+async function overpassJsonWithRetry(query, { userAgent }, retries = OVERPASS_ENDPOINTS.length - 1, pauseMs = 1500) {
   for (let attempt = 0; ; attempt++) {
-    const resp = await fetch(opts.endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Accept': 'application/json',
-        'User-Agent': opts.userAgent,
-      },
-      body: `data=${encodeURIComponent(query)}`,
-    });
+    const endpoint = OVERPASS_ENDPOINTS[attempt % OVERPASS_ENDPOINTS.length];
+    let resp;
+    try {
+      resp = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'application/json',
+          'User-Agent': userAgent,
+        },
+        body: `data=${encodeURIComponent(query)}`,
+      });
+    } catch (e) {
+      // network-level failure (DNS, connection refused, ...) — treat like a
+      // retryable HTTP error and fail over to the next mirror.
+      if (attempt >= retries) throw e;
+      continue;
+    }
     if (resp.ok) return resp.json();
-    const retryable = resp.status === 429 || resp.status === 504;
+    // 429 (rate limited) and 5xx (mirror overloaded/down) are worth trying
+    // the next mirror for; 400 (bad query) and 406 would fail identically
+    // everywhere, so give up immediately instead of burning retries on it.
+    const retryable = resp.status === 429 || resp.status >= 500;
     if (!retryable || attempt >= retries) {
       const text = await resp.text().catch(() => '');
-      const err = new Error(`Overpass ${resp.status} ${resp.statusText}${text ? `: ${text.slice(0, 300)}` : ''}`);
+      const err = new Error(`Overpass (${endpoint}) ${resp.status} ${resp.statusText}${text ? `: ${text.slice(0, 300)}` : ''}`);
       err.status = resp.status;
       throw err;
     }
@@ -450,7 +475,6 @@ app.post('/api/overpass', async (req, res) => {
     const data = await enqueueOverpass(async () => {
       // Needs a proper User-Agent, same courtesy requirement as Nominatim.
       return overpassJsonWithRetry(query, {
-        endpoint: 'https://overpass-api.de/api/interpreter',
         userAgent: 'SceneScout/0.1 (hackathon project; contact: udaya@example.com)',
       });
     });
