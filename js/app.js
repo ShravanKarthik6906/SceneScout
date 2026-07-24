@@ -855,8 +855,6 @@ async function init() {
   initFilters();
   getOrCreateExploreButton();
   syncFilterControls();
-  // Enrich locations with real coordinates via geocoding
-  await enrichLocations();
   initMap({
     onCenterChange: (lat, lng) => { moveCenter(lat, lng); render(); },
     onMarkerClick: (id) => {
@@ -897,20 +895,6 @@ function wrapLoc(loc) {
 }
 
 function barColor(v) { return v >= 75 ? '#7aa874' : v >= 50 ? '#e8b45a' : '#d9744f'; }
-
-// --------------------------------------------------------
-// Enrich locations with real coordinates via geocoding (LocationIQ, via
-// our /api/geocode proxy — see intel.js's geocode()).
-async function enrichLocations() {
-  for (const loc of LOCATIONS) {
-    if (!loc.address) continue;
-    const hit = await geocode(loc.address);
-    if (hit) {
-      loc.lat = hit.lat;
-      loc.lng = hit.lng;
-    }
-  }
-}
 
 function escapeHtml(s) { return String(s).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])); }
 
