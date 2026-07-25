@@ -314,10 +314,14 @@ function openDetail(loc) {
   document.getElementById('detail-desc').textContent = loc.desc;
 
   document.getElementById('detail-stats').innerHTML = `
-    <div><b>${loc.sqft.toLocaleString()}</b><span>sq ft</span></div>
-    <div><b>${loc.ceilingFt || '—'}</b><span>ft ceilings</span></div>
-    <div><b>$${loc.rate}</b><span>per hour</span></div>
-    <div><b>~${loc.intel.crewCapacity}</b><span>crew capacity</span></div>`;
+    <div><b id="stat-sqft">0</b><span>sq ft</span></div>
+    <div><b id="stat-ceil">${loc.ceilingFt ? '0' : '—'}</b><span>ft ceilings</span></div>
+    <div><b id="stat-rate">$0</b><span>per hour</span></div>
+    <div><b id="stat-crew">${loc.intel.crewCapacity != null ? '~0' : '—'}</b><span>crew capacity</span></div>`;
+  animateCount('stat-sqft', loc.sqft);
+  if (loc.ceilingFt) animateCount('stat-ceil', loc.ceilingFt);
+  animateCount('stat-rate', loc.rate, { prefix: '$' });
+  if (loc.intel.crewCapacity != null) animateCount('stat-crew', loc.intel.crewCapacity, { prefix: '~' });
 
   document.getElementById('detail-tags').innerHTML =
     `<div class="section-h">Features</div>` + loc.tags.map(tag => `<span>${escapeHtml(tag)}</span>`).join('');
@@ -884,8 +888,34 @@ async function init() {
   document.getElementById('settings-close').onclick = () => document.getElementById('settings').classList.add('hidden');
   document.getElementById('settings').onclick = (e) => { if (e.target.id === 'settings') e.target.classList.add('hidden'); };
 
+  initCardTilt();
   render();
   fitToRadius(state);
+}
+
+// Cursor-tracking 3D tilt for result cards — one delegated listener on the
+// container rather than per-card, so it stays cheap even with a few
+// hundred results. Only sets the --tilt-x/--tilt-y custom properties the
+// .card:hover rule reads; the hover state itself (and whether the tilt is
+// visible at all) is still owned by CSS.
+function initCardTilt() {
+  const list = document.getElementById('results');
+  list.addEventListener('mousemove', (e) => {
+    const card = e.target.closest('.card');
+    if (!card) return;
+    const r = card.getBoundingClientRect();
+    const px = (e.clientX - r.left) / r.width;
+    const py = (e.clientY - r.top) / r.height;
+    card.style.setProperty('--tilt-x', `${(px - 0.5) * 10}deg`);
+    card.style.setProperty('--tilt-y', `${(0.5 - py) * 10}deg`);
+  });
+  list.addEventListener('mouseout', (e) => {
+    const card = e.target.closest('.card');
+    if (card && (!e.relatedTarget || !card.contains(e.relatedTarget))) {
+      card.style.removeProperty('--tilt-x');
+      card.style.removeProperty('--tilt-y');
+    }
+  });
 }
 
 function wrapLoc(loc) {
@@ -895,6 +925,26 @@ function wrapLoc(loc) {
 }
 
 function barColor(v) { return v >= 75 ? '#7aa874' : v >= 50 ? '#e8b45a' : '#d9744f'; }
+
+const PREFERS_REDUCED_MOTION = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+// Counts a stat up from 0 to its real value (ease-out cubic) instead of
+// just printing the final number — a small dashboard-style flourish for
+// the detail view's headline stats. Skips straight to the final value
+// under prefers-reduced-motion.
+function animateCount(elId, target, { prefix = '', duration = 700 } = {}) {
+  const el = document.getElementById(elId);
+  if (!el || typeof target !== 'number' || !isFinite(target)) return;
+  if (PREFERS_REDUCED_MOTION) { el.textContent = prefix + target.toLocaleString(); return; }
+  const start = performance.now();
+  function tick(now) {
+    const t = Math.min(1, (now - start) / duration);
+    const eased = 1 - Math.pow(1 - t, 3);
+    el.textContent = prefix + Math.round(target * eased).toLocaleString();
+    if (t < 1) requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
 
 function escapeHtml(s) { return String(s).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])); }
 
