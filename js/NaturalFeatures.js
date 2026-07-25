@@ -46,18 +46,38 @@ export async function findNaturalFeatures(center, radiusMi, feature) {
     const radiusM = Math.round(radiusMi * MI_TO_M);
     const query = buildOverpassQuery(center, radiusM, feature.osmTags, feature.elementTypes);
 
-    let data;
-    try {
+    // A transient client-side network blip (Chrome's ERR_NETWORK_CHANGED,
+    // Wi-Fi handoff, etc.) surfaces as fetch() itself rejecting — a plain
+    // TypeError, not an HTTP error response — and is usually gone a moment
+    // later, unlike a real HTTP error (which the server already retries
+    // across Overpass mirrors on its own). Worth one quick client retry.
+    async function postOverpass() {
         const res = await fetch('/api/overpass', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query }),
         });
         if (!res.ok) throw new Error(`overpass proxy failed: ${res.status}`);
-        data = await res.json();
+        return res.json();
+    }
+
+    let data;
+    try {
+        data = await postOverpass();
     } catch (e) {
-        console.warn('[naturalFeatures] Overpass query failed:', e.message);
-        return [];
+        if (e instanceof TypeError) {
+            console.warn('[naturalFeatures] network error, retrying once:', e.message);
+            try {
+                await new Promise(r => setTimeout(r, 1000));
+                data = await postOverpass();
+            } catch (e2) {
+                console.warn('[naturalFeatures] Overpass query failed after retry:', e2.message);
+                return [];
+            }
+        } else {
+            console.warn('[naturalFeatures] Overpass query failed:', e.message);
+            return [];
+        }
     }
 
     const elements = Array.isArray(data.elements) ? data.elements : [];
