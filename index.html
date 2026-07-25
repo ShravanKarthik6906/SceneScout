@@ -11,16 +11,11 @@
   </script>
 </head>
 <body>
-  <!-- purely decorative drifting dust motes, like light catching particles
-       in a beam — see .dust-field / .mote in css/style.css -->
-  <div class="dust-field" aria-hidden="true">
-    <span class="mote"></span>
-    <span class="mote"></span>
-    <span class="mote"></span>
-    <span class="mote"></span>
-    <span class="mote"></span>
-    <span class="mote"></span>
-  </div>
+  <!-- literal 2.35:1-inspired letterbox bars — real elements (not a
+       background trick) so app.js can retract them independently when
+       entering 3D/street view/the tour. See .letterbox in css/style.css. -->
+  <div class="letterbox top" id="letterbox-top" aria-hidden="true"></div>
+  <div class="letterbox bottom" id="letterbox-bottom" aria-hidden="true"></div>
 
   <header>
     <div class="logo">Scene<em>Scout</em></div>
@@ -104,10 +99,19 @@
     <main id="map">
       <div id="map2d"></div>
       <div id="map3d"></div>
+      <!-- exposure-style HUD readout: radius + result count, updated by
+           app.js's render(). -->
+      <div id="map-hud">
+        <span id="hud-radius"></span>
+        <span id="hud-count"></span>
+      </div>
       <div id="map-toggle">
         <button data-view="2d" class="active">🗺 2D</button>
         <button data-view="3d">🌎 3D</button>
       </div>
+      <!-- shutter-style iris wipe on search submit — see .play in
+           css/style.css and playIrisTransition() in js/app.js. -->
+      <div id="iris-transition"></div>
     </main>
   </div>
 

@@ -125,7 +125,7 @@ function toFeatureLocation(el, feature, name, lat, lng, diameterFt) {
         type: slugify(feature.label),   // dynamic — not in catalog.js's TYPES
         _icon: feature.icon || '📍',
         _label: feature.label,
-        _color: '#5a8a7a',
+        _color: '#3e6e6a',
         lat, lng,
         address: `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
         neighborhood: el.tags?.['addr:city'] || 'Unincorporated area',

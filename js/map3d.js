@@ -85,7 +85,9 @@ export async function ensure3D(container, cb, mapClickCb) {
       center: [-98, 39], zoom: 3.5, pitch: 55, bearing: -18,
       antialias: true, attributionControl: true,
     });
-    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-left');
+    // bottom-left, matching the 2D Leaflet map, so it never collides with
+    // the top-left exposure-style HUD readout.
+    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'bottom-left');
     map.on('style.load', addBuildingLayer);
     // the container may still be settling layout when the map is created; a
     // resize once the first frame loads guarantees tiles fill the pane.

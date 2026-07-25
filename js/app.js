@@ -3,7 +3,7 @@
 // only; the heavy lifting lives in the focused modules it imports.
 
 import { LOCATIONS, TYPES, CENTERS, LIGHT_LABELS } from './catalog.js';
-import { initMap, updateMap, flyToListing, fitToRadius } from './map.js';
+import { initMap, updateMap, flyToListing, fitToRadius, setSelectedMarker, clearSelectedMarker } from './map.js';
 import { drawPlanThumb, drawIsoHero } from './thumbs.js';
 import { openTour } from './tour.js';
 import { parseQuery } from './nlp.js';
@@ -72,6 +72,31 @@ const EXAMPLES = [
   'Blackout sound stage that fits a crew of 40 in Atlanta',
   'Bright mid-century house with walls of glass in Seattle',
 ];
+
+// -------------------------------------------------------- immersive modes
+// Retracts the letterbox bars when the user enters any full-viewport or
+// on-location viewing mode (3D map, street view, the 3D tour) — several
+// of these can be active independently, so track reasons in a set rather
+// than a single flag.
+const immersiveReasons = new Set();
+function setImmersive(reason, active) {
+  if (active) immersiveReasons.add(reason); else immersiveReasons.delete(reason);
+  const on = immersiveReasons.size > 0;
+  document.getElementById('letterbox-top')?.classList.toggle('retracted', on);
+  document.getElementById('letterbox-bottom')?.classList.toggle('retracted', on);
+}
+
+// -------------------------------------------------------- iris transition
+// The one deliberate motion moment on search submit — plays over the map
+// viewport, decoupled from the actual search timing so a slow network
+// call never leaves the shutter hanging closed.
+function playIrisTransition() {
+  const el = document.getElementById('iris-transition');
+  if (!el) return;
+  el.classList.remove('play');
+  void el.offsetWidth; // restart the animation if it's still mid-play
+  el.classList.add('play');
+}
 
 // ------------------------------------------------------------- search core
 function haversineMi(lat1, lng1, lat2, lng2) {
@@ -189,6 +214,10 @@ function render() {
 
   updateMap(state, results, [...LOCATIONS, ...dynamicLocations]);
   if (state.view === '3d') update3D(state.center, results);
+
+  // exposure-style HUD readout, top-left of the map viewport
+  document.getElementById('hud-radius').textContent = `${state.radiusMi} MI`;
+  document.getElementById('hud-count').textContent = `${results.length} RESULT${results.length === 1 ? '' : 'S'}`;
 }
 
 // --------------------------------------------------------------- AI search
@@ -307,6 +336,7 @@ function openDetail(loc) {
   document.getElementById('detail').classList.remove('hidden');
   flyToListing(loc);
   if (state.view === '3d') flyToListing3D(loc);
+  setSelectedMarker(loc.id);
 
   document.getElementById('detail-title').textContent = loc.name;
   document.getElementById('detail-sub').innerHTML =
@@ -593,10 +623,12 @@ async function toggleStreetView() {
     teardownMapillary();
     panel.classList.add('hidden');
     panel.innerHTML = '';
+    setImmersive('streetview', false);
     return;
   }
 
   panel.classList.remove('hidden');
+  setImmersive('streetview', true);
   const { lat, lng } = currentLoc;
 
   panel.innerHTML = `<div class="sv-loading">Looking for street-level imagery…</div>`;
@@ -668,6 +700,8 @@ function closeDetail() {
   teardownMapillary();
   document.getElementById('detail').classList.add('hidden');
   currentLoc = null;
+  clearSelectedMarker();
+  setImmersive('streetview', false);
 }
 
 // ---------------------------------------------------------------- settings
@@ -690,6 +724,7 @@ let exploreMode = false; // true when "Explore Globe" is active — map clicks d
 async function setView(view) {
   if (view === state.view) return;
   state.view = view;
+  setImmersive('3d', view === '3d');
   document.querySelectorAll('#map-toggle button').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   const el3d = document.getElementById('map3d');
   const el2d = document.getElementById('map2d');
@@ -794,7 +829,7 @@ async function handleGlobeClick(lat, lng) {
 // -------------------------------------------------------------------- init
 function initAISearch() {
   const input = document.getElementById('ai-input');
-  const go = () => runAISearch(input.value);
+  const go = () => { playIrisTransition(); runAISearch(input.value); };
   document.getElementById('ai-go').onclick = go;
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go(); }
@@ -803,7 +838,7 @@ function initAISearch() {
   for (const text of EXAMPLES) {
     const b = document.createElement('button');
     b.className = 'ex-chip'; b.textContent = text;
-    b.onclick = () => { input.value = text; runAISearch(text); };
+    b.onclick = () => { input.value = text; playIrisTransition(); runAISearch(text); };
     ex.appendChild(b);
   }
 }
@@ -871,8 +906,12 @@ async function init() {
 
   document.getElementById('detail-close').onclick = closeDetail;
   document.getElementById('detail').onclick = (e) => { if (e.target.id === 'detail') closeDetail(); };
-  document.getElementById('enter-tour').onclick = () => { if (currentLoc) { const l = currentLoc; closeDetail(); openTour(l); } };
-  document.getElementById('fly-tour').onclick = () => { if (currentLoc) { const l = currentLoc; closeDetail(); openTour(l, { mode: 'fly' }); } };
+  document.getElementById('enter-tour').onclick = () => { if (currentLoc) { const l = currentLoc; closeDetail(); setImmersive('tour', true); openTour(l); } };
+  document.getElementById('fly-tour').onclick = () => { if (currentLoc) { const l = currentLoc; closeDetail(); setImmersive('tour', true); openTour(l, { mode: 'fly' }); } };
+  // tour.js owns #tour-close's primary handler via .onclick — addEventListener
+  // here so this doesn't clobber it, just observes the same click to
+  // restore the letterbox bars.
+  document.getElementById('tour-close').addEventListener('click', () => setImmersive('tour', false));
   document.getElementById('toggle-sv').onclick = toggleStreetView;
   document.getElementById('open-earth').onclick = () => {
     if (currentLoc) window.open(`https://earth.google.com/web/search/${currentLoc.lat},${currentLoc.lng}`, '_blank');
@@ -888,34 +927,8 @@ async function init() {
   document.getElementById('settings-close').onclick = () => document.getElementById('settings').classList.add('hidden');
   document.getElementById('settings').onclick = (e) => { if (e.target.id === 'settings') e.target.classList.add('hidden'); };
 
-  initCardTilt();
   render();
   fitToRadius(state);
-}
-
-// Cursor-tracking 3D tilt for result cards — one delegated listener on the
-// container rather than per-card, so it stays cheap even with a few
-// hundred results. Only sets the --tilt-x/--tilt-y custom properties the
-// .card:hover rule reads; the hover state itself (and whether the tilt is
-// visible at all) is still owned by CSS.
-function initCardTilt() {
-  const list = document.getElementById('results');
-  list.addEventListener('mousemove', (e) => {
-    const card = e.target.closest('.card');
-    if (!card) return;
-    const r = card.getBoundingClientRect();
-    const px = (e.clientX - r.left) / r.width;
-    const py = (e.clientY - r.top) / r.height;
-    card.style.setProperty('--tilt-x', `${(px - 0.5) * 10}deg`);
-    card.style.setProperty('--tilt-y', `${(0.5 - py) * 10}deg`);
-  });
-  list.addEventListener('mouseout', (e) => {
-    const card = e.target.closest('.card');
-    if (card && (!e.relatedTarget || !card.contains(e.relatedTarget))) {
-      card.style.removeProperty('--tilt-x');
-      card.style.removeProperty('--tilt-y');
-    }
-  });
 }
 
 function wrapLoc(loc) {
@@ -924,7 +937,7 @@ function wrapLoc(loc) {
   return { ...loc, distMi: haversineMi(state.center.lat, state.center.lng, loc.lat, loc.lng), score: suit.overall, suit };
 }
 
-function barColor(v) { return v >= 75 ? '#7aa874' : v >= 50 ? '#e8b45a' : '#d9744f'; }
+function barColor(v) { return v >= 75 ? '#7aa874' : v >= 50 ? '#c9962b' : '#b5533a'; }
 
 const PREFERS_REDUCED_MOTION = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 

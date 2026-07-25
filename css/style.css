@@ -1,16 +1,67 @@
+@font-face {
+  font-family: 'Archivo Narrow';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('../vendor/fonts/archivo-narrow-latin-600-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Archivo Narrow';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../vendor/fonts/archivo-narrow-latin-700-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../vendor/fonts/inter-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../vendor/fonts/inter-latin-500-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('../vendor/fonts/inter-latin-600-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../vendor/fonts/jetbrains-mono-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../vendor/fonts/jetbrains-mono-latin-500-normal.woff2') format('woff2');
+}
+
 :root {
-  --bg: #0a0b0e;
-  --panel: #12141a;
-  --panel-2: #171a22;
-  --line: #262b38;
-  --text: #ece7dc;
-  --muted: #98a0ac;
-  --gold: #e8b45a;
-  --gold-warm: #ff9d5c;
-  --teal: #4fd1c5;
-  --blue: #7fb4ff;
-  --grain-opacity: 0.1;
-  --letterbox: 12px;
+  --bg: #0b0d0d;
+  --panel: #131515;
+  --panel-2: #181b1b;
+  --line: #232626;
+  --text: #edeae0;
+  --muted: #8a8782;
+  --amber: #c9962b;
+  --teal: #3e6e6a;
+  --grain-opacity: 0.05;
+  --letterbox: 28px;
+  --font-display: 'Archivo Narrow', 'Arial Narrow', sans-serif;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
 }
 
 * {
@@ -24,106 +75,83 @@ body {
   height: 100%;
   background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: var(--font-body);
   overflow: hidden;
 }
 
-/* ------------------------------------------------------- cinematic grade */
-/* A soft vignette + drifting film-grain layer over the whole app — the
-   "shot on film, not rendered flat" texture the rest of this section leans
-   on. Both are fixed/pointer-events:none so they never intercept clicks,
-   and sit above even the fullscreen 3D tour (.overlay is z-index 1000) so
-   the grade reads consistently everywhere, including inside the walk. */
-body::before,
+/* ---------------------------------------------------------- film grain */
+/* A static, low-opacity noise texture over the whole app — no shimmer, no
+   drift. Sits above even the fullscreen 3D tour (.overlay is z-index 1000)
+   so the grade reads consistently everywhere, but is otherwise inert. */
 body::after {
   content: '';
   position: fixed;
   inset: 0;
   pointer-events: none;
-}
-
-/* Letterbox bars (literal cinema-frame device) + a full-viewport
-   teal/orange split-tone wash + vignette, all as one layered background so
-   body's two pseudo-element slots (the other is the grain layer below)
-   are enough — no extra DOM elements needed. mix-blend-mode: multiply
-   means the solid black bar layers darken straight to black regardless of
-   what's under them, and stay clear of the tour's bottom-anchored controls
-   (#tour-help/#tour-lens sit at bottom:14px) by keeping the bars at 12px. */
-body::before {
-  z-index: 9998;
-  background:
-    linear-gradient(#000, #000) top / 100% var(--letterbox) no-repeat,
-    linear-gradient(#000, #000) bottom / 100% var(--letterbox) no-repeat,
-    radial-gradient(ellipse at 16% 10%, rgba(79, 209, 197, 0.16), transparent 42%) 0 0 / 100% 100% no-repeat,
-    radial-gradient(ellipse at 84% 92%, rgba(255, 157, 92, 0.2), transparent 42%) 0 0 / 100% 100% no-repeat,
-    radial-gradient(ellipse at 50% 42%, transparent 32%, rgba(3, 2, 4, 0.72) 100%) 0 0 / 100% 100% no-repeat;
-  mix-blend-mode: multiply;
-}
-
-body::after {
   z-index: 9999;
   opacity: var(--grain-opacity);
   mix-blend-mode: overlay;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  animation: grain-shift 0.6s steps(3) infinite;
 }
 
-@keyframes grain-shift {
-  0% { transform: translate(0, 0); }
-  33% { transform: translate(-1.5%, 1%); }
-  66% { transform: translate(1%, -1.5%); }
-  100% { transform: translate(0, 0); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  body::after { animation: none; }
-}
-
-/* thin custom scrollbars matching the grade, instead of the default chrome */
-::-webkit-scrollbar { width: 9px; height: 9px; }
+/* thin, sharp-cornered scrollbars — mechanical, not a rounded consumer-app
+   affordance. */
+::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
   background: var(--line);
-  border-radius: 5px;
-  border: 2px solid var(--panel);
+  border-radius: 2px;
 }
-::-webkit-scrollbar-thumb:hover { background: #333a4a; }
+::-webkit-scrollbar-thumb:hover { background: #333838; }
 
-/* drifting dust motes — like light particles caught in a beam, rising
-   slowly and fading in/out. Sits below the grain/vignette (z-index 9997
-   vs 9998/9999) so the grade still reads on top of them. */
-.dust-field {
+/* ------------------------------------------------------------ letterbox */
+/* Literal 2.35:1-inspired letterbox bars, top and bottom of the whole
+   viewport — real DOM elements (not baked into a decorative background)
+   so they can retract independently when the user enters 3D/street view.
+   app.js toggles .retracted on these via #layout.mode-immersive. */
+.letterbox {
   position: fixed;
-  inset: 0;
-  z-index: 9997;
+  left: 0;
+  right: 0;
+  height: var(--letterbox);
+  background: #000;
+  z-index: 9998;
   pointer-events: none;
-  overflow: hidden;
+  transition: height 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
-
-.mote {
-  position: absolute;
-  bottom: -5%;
-  border-radius: 50%;
-  filter: blur(0.5px);
-  animation: mote-float linear infinite;
-}
-
-.mote:nth-child(1) { width: 5px; height: 5px; left: 8%;  background: radial-gradient(circle, rgba(232, 180, 90, 0.55), transparent 70%); animation-duration: 26s; animation-delay: 0s; }
-.mote:nth-child(2) { width: 3px; height: 3px; left: 22%; background: radial-gradient(circle, rgba(79, 209, 197, 0.5), transparent 70%);  animation-duration: 19s; animation-delay: -6s; }
-.mote:nth-child(3) { width: 6px; height: 6px; left: 48%; background: radial-gradient(circle, rgba(232, 180, 90, 0.45), transparent 70%); animation-duration: 31s; animation-delay: -12s; }
-.mote:nth-child(4) { width: 4px; height: 4px; left: 68%; background: radial-gradient(circle, rgba(79, 209, 197, 0.5), transparent 70%);  animation-duration: 24s; animation-delay: -3s; }
-.mote:nth-child(5) { width: 3px; height: 3px; left: 84%; background: radial-gradient(circle, rgba(232, 180, 90, 0.5), transparent 70%);  animation-duration: 28s; animation-delay: -18s; }
-.mote:nth-child(6) { width: 5px; height: 5px; left: 94%; background: radial-gradient(circle, rgba(255, 157, 92, 0.5), transparent 70%);  animation-duration: 22s; animation-delay: -9s; }
-
-@keyframes mote-float {
-  0%   { transform: translateY(0) translateX(0); opacity: 0; }
-  10%  { opacity: 0.7; }
-  90%  { opacity: 0.4; }
-  100% { transform: translateY(-108vh) translateX(24px); opacity: 0; }
-}
+.letterbox.top { top: 0; }
+.letterbox.bottom { bottom: 0; }
+.letterbox.retracted { height: 0; }
 
 @media (prefers-reduced-motion: reduce) {
-  .mote { animation: none; display: none; }
+  .letterbox { transition: none; }
+}
+
+/* ------------------------------------------------------ iris transition */
+/* The one deliberate motion moment: a shutter-style iris wipe over the map
+   viewport on search submit. Triggered by app.js adding .play; removes
+   itself on animationend. */
+#iris-transition {
+  position: absolute;
+  inset: 0;
+  z-index: 600;
+  background: #000;
+  pointer-events: none;
+  /* rest state: a zero-radius circle clips away the entire black fill,
+     so nothing is painted and the map underneath is fully visible. */
+  clip-path: circle(0% at 50% 50%);
+}
+#iris-transition.play {
+  animation: iris-wipe 0.6s cubic-bezier(0.65, 0, 0.35, 1);
+}
+@keyframes iris-wipe {
+  0% { clip-path: circle(0% at 50% 50%); }
+  48% { clip-path: circle(150% at 50% 50%); }
+  52% { clip-path: circle(150% at 50% 50%); }
+  100% { clip-path: circle(0% at 50% 50%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #iris-transition.play { animation: none; }
 }
 
 /* ---------------------------------------------------------------- header */
@@ -134,105 +162,56 @@ header {
   gap: 14px;
   padding: 0 18px;
   position: relative;
-  background: linear-gradient(180deg, #10131b, #0d1017);
+  background: var(--panel);
   border-bottom: 1px solid var(--line);
-  overflow: hidden;
-}
-
-/* a slow-drifting warm/teal light leak across the header — the one place in
-   the chrome that's always on screen, so it carries the "surreal" half of
-   the brief without needing a photo to sit behind it. */
-header::before {
-  content: '';
-  position: absolute;
-  top: -140%;
-  left: -8%;
-  width: 480px;
-  height: 480px;
-  background: radial-gradient(circle, rgba(255, 157, 92, 0.32), transparent 68%);
-  pointer-events: none;
-  animation: leak-drift 14s ease-in-out infinite;
-  filter: blur(2px);
-}
-
-header::after {
-  content: '';
-  position: absolute;
-  top: -160%;
-  right: 8%;
-  width: 380px;
-  height: 380px;
-  background: radial-gradient(circle, rgba(79, 209, 197, 0.22), transparent 70%);
-  pointer-events: none;
-  animation: leak-drift 18s ease-in-out infinite reverse;
-  filter: blur(2px);
-}
-
-@keyframes leak-drift {
-  0%, 100% { transform: translate(0, 0); }
-  50% { transform: translate(60px, 24px); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  header::before, header::after { animation: none; }
 }
 
 .logo {
-  font-size: 19px;
-  font-weight: 800;
-  letter-spacing: 0.6px;
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
   position: relative;
-  z-index: 1;
 }
 
 /* a small lens-glass emblem before the wordmark — inline-block so it sits
    beside the mixed text/<em> content without turning .logo into a flex
-   container (which would risk splitting "Scene"/<em>Scout</em> apart). */
+   container (which would risk splitting "Scene"/<em>Scout</em> apart).
+   Static — no glow animation, no drift. */
 .logo::before {
   content: '';
   display: inline-block;
   vertical-align: middle;
-  margin-right: 8px;
-  width: 18px;
-  height: 18px;
+  margin-right: 9px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   background:
-    radial-gradient(circle at 35% 32%, rgba(255, 255, 255, 0.55), transparent 42%),
-    radial-gradient(circle, #1a1408 28%, var(--gold) 64%, #1a1408 70%, transparent 74%);
-  box-shadow: 0 0 9px rgba(232, 180, 90, 0.5);
+    radial-gradient(circle at 35% 32%, rgba(255, 255, 255, 0.4), transparent 42%),
+    radial-gradient(circle, #0b0d0d 28%, var(--amber) 64%, #0b0d0d 70%, transparent 74%);
 }
 
 .logo em {
-  color: var(--gold);
+  color: var(--amber);
   font-style: normal;
-  text-shadow: 0 0 18px rgba(232, 180, 90, 0.45);
 }
 
 .tagline {
-  font-size: 12.5px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.3px;
   color: var(--muted);
   border-left: 1px solid var(--line);
   padding-left: 14px;
-  position: relative;
-  z-index: 1;
+  text-transform: uppercase;
 }
 
 .tagline::before {
   content: '● ';
-  color: #e0523f;
+  color: #8a3f30;
   font-size: 8px;
   vertical-align: middle;
-  display: inline-block;
-  animation: rec-pulse 1.8s ease-in-out infinite;
-}
-
-@keyframes rec-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .tagline::before { animation: none; }
 }
 
 header .spacer {
@@ -240,17 +219,20 @@ header .spacer {
 }
 
 #settings-btn {
+  font-family: var(--font-mono);
   background: var(--panel-2);
   border: 1px solid var(--line);
   color: var(--text);
-  border-radius: 8px;
+  border-radius: 3px;
   padding: 7px 13px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
 }
 
 #settings-btn:hover {
-  border-color: var(--gold);
+  border-color: var(--amber);
 }
 
 /* ---------------------------------------------------------------- layout */
@@ -264,56 +246,69 @@ header .spacer {
   min-width: 340px;
   display: flex;
   flex-direction: column;
-  background: linear-gradient(165deg, var(--panel) 0%, #0f1116 70%, #0d0f14 100%);
+  background: var(--panel);
   border-right: 1px solid var(--line);
   position: relative;
 }
 
-/* a film-strip sprocket-hole edge along the sidebar/map seam — every
-   section inside already keeps 14-16px of right padding, so this 8px
-   decorative strip never overlaps real content. */
-#sidebar::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  right: 0;
-  width: 8px;
-  background-image: radial-gradient(circle, rgba(0, 0, 0, 0.65) 2.2px, transparent 2.4px);
-  background-size: 8px 20px;
-  background-repeat: repeat-y;
-  background-position: center;
-  opacity: 0.6;
-  pointer-events: none;
-}
-
 #map {
   flex: 1;
-  background: #0a0c10;
+  background: #08090a;
   position: relative;
   /* a camera-reticle cursor over open map area — inherited by children,
      so Leaflet/MapLibre's own more-specific cursor rules on markers and
      drag states (grab/grabbing/pointer) still win where they're set. */
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%23e8b45a' stroke-width='1.5'/%3E%3Cline x1='16' y1='1' x2='16' y2='9' stroke='%23e8b45a' stroke-width='1.5'/%3E%3Cline x1='16' y1='23' x2='16' y2='31' stroke='%23e8b45a' stroke-width='1.5'/%3E%3Cline x1='1' y1='16' x2='9' y2='16' stroke='%23e8b45a' stroke-width='1.5'/%3E%3Cline x1='23' y1='16' x2='31' y2='16' stroke='%23e8b45a' stroke-width='1.5'/%3E%3C/svg%3E") 16 16, crosshair;
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%23c9962b' stroke-width='1.5'/%3E%3Cline x1='16' y1='1' x2='16' y2='9' stroke='%23c9962b' stroke-width='1.5'/%3E%3Cline x1='16' y1='23' x2='16' y2='31' stroke='%23c9962b' stroke-width='1.5'/%3E%3Cline x1='1' y1='16' x2='9' y2='16' stroke='%23c9962b' stroke-width='1.5'/%3E%3Cline x1='23' y1='16' x2='31' y2='16' stroke='%23c9962b' stroke-width='1.5'/%3E%3C/svg%3E") 16 16, crosshair;
 }
 
-/* rule-of-thirds viewfinder grid — the classic camera framing aid, kept to
-   thin lines rather than corner brackets since both top corners are
-   already occupied by real controls (zoom, 2D/3D toggle). z-index 400
-   sits above the tile layer (z-index:auto) but below the toggle (500) and
-   Leaflet's own marker panes, and pointer-events:none keeps it fully
-   click-through. */
+/* Viewfinder AF-frame corner brackets at the four corners of the map
+   viewport — a real border would read as a UI panel; brackets read as a
+   camera frame. z-index above the tile layer (auto) but below the 2D/3D
+   toggle (500) and Leaflet's own marker panes, pointer-events:none keeps
+   the whole thing fully click-through. */
 #map::before {
   content: '';
   position: absolute;
-  inset: 0;
+  inset: 14px;
   z-index: 400;
   pointer-events: none;
   background-image:
-    linear-gradient(90deg, transparent calc(33.333% - 0.5px), rgba(232, 180, 90, 0.14) calc(33.333% - 0.5px), rgba(232, 180, 90, 0.14) calc(33.333% + 0.5px), transparent calc(33.333% + 0.5px)),
-    linear-gradient(90deg, transparent calc(66.666% - 0.5px), rgba(232, 180, 90, 0.14) calc(66.666% - 0.5px), rgba(232, 180, 90, 0.14) calc(66.666% + 0.5px), transparent calc(66.666% + 0.5px)),
-    linear-gradient(0deg, transparent calc(33.333% - 0.5px), rgba(232, 180, 90, 0.14) calc(33.333% - 0.5px), rgba(232, 180, 90, 0.14) calc(33.333% + 0.5px), transparent calc(33.333% + 0.5px)),
-    linear-gradient(0deg, transparent calc(66.666% - 0.5px), rgba(232, 180, 90, 0.14) calc(66.666% - 0.5px), rgba(232, 180, 90, 0.14) calc(66.666% + 0.5px), transparent calc(66.666% + 0.5px));
+    linear-gradient(var(--amber), var(--amber)), linear-gradient(var(--amber), var(--amber)),
+    linear-gradient(var(--amber), var(--amber)), linear-gradient(var(--amber), var(--amber)),
+    linear-gradient(var(--amber), var(--amber)), linear-gradient(var(--amber), var(--amber)),
+    linear-gradient(var(--amber), var(--amber)), linear-gradient(var(--amber), var(--amber));
+  background-repeat: no-repeat;
+  background-size: 2px 26px, 26px 2px, 2px 26px, 26px 2px, 2px 26px, 26px 2px, 2px 26px, 26px 2px;
+  background-position:
+    top left, top left,
+    top right, top right,
+    bottom left, bottom left,
+    bottom right, bottom right;
+  opacity: 0.65;
+}
+
+/* Persistent exposure-style HUD readout, top-left of the map viewport:
+   search radius + result count in monospace. Populated by app.js on every
+   render(). */
+#map-hud {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 450;
+  display: flex;
+  gap: 8px;
+  pointer-events: none;
+}
+
+#map-hud span {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  color: var(--amber);
+  background: rgba(11, 13, 13, 0.78);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 4px 8px;
 }
 
 #map2d,
@@ -334,33 +329,35 @@ header .spacer {
   display: flex;
   gap: 3px;
   padding: 3px;
-  background: rgba(12, 15, 22, 0.9);
+  background: rgba(11, 13, 13, 0.9);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 3px;
 }
 
 #map-toggle button {
+  font-family: var(--font-mono);
   background: transparent;
   border: none;
   color: var(--muted);
   padding: 6px 12px;
-  font-size: 12.5px;
-  border-radius: 7px;
+  font-size: 11.5px;
+  letter-spacing: 0.3px;
+  border-radius: 2px;
   cursor: pointer;
 }
 
 #map-toggle button.active {
-  background: var(--gold);
-  color: #1a1408;
+  background: var(--amber);
+  color: #0b0d0d;
   font-weight: 700;
 }
 
 .m3d {
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   display: grid;
   place-items: center;
-  background: var(--c, #7fb4ff);
+  background: var(--c, var(--teal));
   border: 2px solid #fff;
   border-radius: 50% 50% 50% 0;
   transform: rotate(-45deg);
@@ -400,60 +397,67 @@ header .spacer {
   padding: 14px 16px 12px;
   border-bottom: 1px solid var(--line);
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 9px;
 }
 
 .ai-label {
+  font-family: var(--font-display);
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.8px;
+  letter-spacing: 1.4px;
+  font-weight: 600;
   color: var(--muted);
 }
 
 .ai-box {
   position: relative;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
 }
 
+/* Framed like a slate strip, not a rounded search box: a solid amber
+   marking-stripe across the top edge, sharp mechanical corners below. */
 #ai-input {
   width: 100%;
   resize: vertical;
   min-height: 52px;
   background: var(--panel-2);
   border: 1px solid var(--line);
+  border-top: 3px solid var(--amber);
   color: var(--text);
-  border-radius: 10px;
+  border-radius: 0 0 3px 3px;
   padding: 10px 11px;
   font: inherit;
   font-size: 13px;
   line-height: 1.45;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+  transition: border-color 0.15s ease;
 }
 
 #ai-input:focus {
   outline: none;
-  border-color: var(--gold);
-  box-shadow: 0 0 0 3px rgba(232, 180, 90, 0.14), 0 0 22px rgba(232, 180, 90, 0.12);
+  border-color: var(--amber);
 }
 
 #ai-go {
+  font-family: var(--font-display);
   justify-self: end;
-  background: var(--gold);
-  color: #1a1408;
+  background: var(--amber);
+  color: #0b0d0d;
   font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
   border: none;
-  border-radius: 9px;
+  border-radius: 3px;
   padding: 8px 16px;
-  font-size: 13px;
+  font-size: 12.5px;
   cursor: pointer;
-  box-shadow: 0 0 16px rgba(232, 180, 90, 0.35);
-  transition: filter 0.15s ease, box-shadow 0.15s ease;
+  transition: filter 0.15s ease;
 }
 
 #ai-go:hover {
-  filter: brightness(1.08);
-  box-shadow: 0 0 24px rgba(232, 180, 90, 0.5);
+  filter: brightness(1.1);
 }
 
 .ai-examples {
@@ -462,13 +466,18 @@ header .spacer {
   gap: 5px;
 }
 
+/* Suggested briefs read as scene sluglines — monospace, like a
+   screenwriting slugline (INT./EXT. — LOCATION — TIME), not a search
+   suggestion pill. */
 .ex-chip {
-  background: rgba(127, 180, 255, 0.08);
+  font-family: var(--font-mono);
+  background: var(--panel-2);
   border: 1px solid var(--line);
   color: var(--muted);
-  border-radius: 999px;
+  border-radius: 2px;
   padding: 4px 9px;
-  font-size: 11px;
+  font-size: 10.5px;
+  letter-spacing: 0.2px;
   cursor: pointer;
   max-width: 100%;
   overflow: hidden;
@@ -478,21 +487,23 @@ header .spacer {
 }
 
 .ex-chip:hover {
-  border-color: var(--blue);
-  color: var(--blue);
+  border-color: var(--amber);
+  color: var(--text);
 }
 
 .ai-interpreted {
   background: var(--panel-2);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 3px;
   padding: 10px 11px;
 }
 
 .ai-interpreted-head {
+  font-family: var(--font-display);
   font-size: 10.5px;
   text-transform: uppercase;
-  letter-spacing: 0.7px;
+  letter-spacing: 1.1px;
+  font-weight: 600;
   color: var(--muted);
   margin-bottom: 7px;
 }
@@ -503,13 +514,17 @@ header .spacer {
   gap: 5px;
 }
 
+/* HUD-readout styling for the parsed brief — the active search state,
+   in monospace, like camera exposure tags. */
 .ai-chips span {
-  font-size: 11.5px;
-  color: var(--gold);
-  background: rgba(232, 180, 90, 0.12);
-  border: 1px solid rgba(232, 180, 90, 0.3);
-  border-radius: 999px;
-  padding: 3px 9px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.2px;
+  color: var(--amber);
+  background: rgba(201, 150, 43, 0.12);
+  border: 1px solid rgba(201, 150, 43, 0.35);
+  border-radius: 2px;
+  padding: 3px 8px;
 }
 
 .ai-chips span.dim {
@@ -523,12 +538,14 @@ header .spacer {
 }
 
 #filters-wrap>summary {
+  font-family: var(--font-display);
   list-style: none;
   cursor: pointer;
   padding: 10px 16px;
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.8px;
+  letter-spacing: 1.2px;
+  font-weight: 600;
   color: var(--muted);
   user-select: none;
 }
@@ -539,7 +556,7 @@ header .spacer {
 
 #filters-wrap>summary::before {
   content: '▸ ';
-  color: var(--gold);
+  color: var(--amber);
 }
 
 #filters-wrap[open]>summary::before {
@@ -563,25 +580,26 @@ header .spacer {
   background: var(--panel-2);
   border: 1px solid var(--line);
   color: var(--text);
-  border-radius: 8px;
+  border-radius: 3px;
   padding: 0 13px;
   font-size: 13px;
   cursor: pointer;
 }
 
 .geo-box button:hover {
-  border-color: var(--gold);
+  border-color: var(--amber);
 }
 
 .geo-status {
-  font-size: 11.5px;
-  color: var(--blue);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--teal);
   margin-top: 2px;
   min-height: 14px;
 }
 
 .geo-status.warn {
-  color: #e0975a;
+  color: #b5533a;
 }
 
 /* --------------------------------------------------------------- filters */
@@ -598,17 +616,21 @@ header .spacer {
 }
 
 .filter-row label {
+  font-family: var(--font-display);
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.8px;
+  letter-spacing: 1.1px;
+  font-weight: 600;
   color: var(--muted);
   display: flex;
   justify-content: space-between;
 }
 
+/* readout values (radius, sqft, budget) — monospace, HUD-style. */
 .filter-row label b {
-  color: var(--gold);
-  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--amber);
+  font-weight: 500;
   text-transform: none;
   letter-spacing: 0;
 }
@@ -625,7 +647,7 @@ input[type="password"] {
   background: var(--panel-2);
   border: 1px solid var(--line);
   color: var(--text);
-  border-radius: 8px;
+  border-radius: 3px;
   padding: 8px 10px;
   font-size: 13px;
   width: 100%;
@@ -633,7 +655,7 @@ input[type="password"] {
 
 input[type="range"] {
   width: 100%;
-  accent-color: var(--gold);
+  accent-color: var(--amber);
 }
 
 #type-chips {
@@ -646,28 +668,29 @@ input[type="range"] {
   background: var(--panel-2);
   border: 1px solid var(--line);
   color: var(--muted);
-  border-radius: 999px;
+  border-radius: 3px;
   padding: 5px 11px;
   font-size: 12.5px;
   cursor: pointer;
-  transition: all 0.12s;
+  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
 }
 
 .chip:hover {
-  border-color: var(--gold);
+  border-color: var(--amber);
   color: var(--text);
 }
 
 .chip.active {
-  background: rgba(232, 180, 90, 0.14);
-  border-color: var(--gold);
-  color: var(--gold);
+  background: rgba(201, 150, 43, 0.14);
+  border-color: var(--amber);
+  color: var(--amber);
 }
 
 /* --------------------------------------------------------------- results */
 #results-meta {
+  font-family: var(--font-mono);
   padding: 10px 16px;
-  font-size: 12.5px;
+  font-size: 11.5px;
   color: var(--muted);
   border-bottom: 1px solid var(--line);
 }
@@ -680,7 +703,6 @@ input[type="range"] {
   grid-auto-rows: max-content;
   align-content: start;
   gap: 12px;
-  counter-reset: frame;
 }
 
 .empty {
@@ -695,88 +717,22 @@ input[type="range"] {
   position: relative;
   background: var(--panel-2);
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 3px;
   overflow: hidden;
   cursor: pointer;
-  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
-  animation: card-in 0.4s ease backwards;
-  counter-increment: frame;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-/* a sprocket-perforation strip along the top edge of the thumbnail (film
-   leader) plus a burned-in frame counter, so each result reads as a
-   numbered film cell rather than a plain card. Pure CSS via counter() —
-   no per-card markup or JS needed. */
-.card::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 6px;
-  z-index: 2;
-  pointer-events: none;
-  background-image: radial-gradient(circle, rgba(0, 0, 0, 0.6) 1.6px, transparent 1.8px);
-  background-size: 16px 6px;
-  background-repeat: repeat-x;
-}
-
-.card::after {
-  content: 'FRAME ' counter(frame, decimal-leading-zero);
-  position: absolute;
-  top: 9px;
-  left: 8px;
-  z-index: 2;
-  pointer-events: none;
-  font-family: 'SF Mono', 'Courier New', monospace;
-  font-size: 9px;
-  letter-spacing: 0.5px;
-  color: rgba(232, 180, 90, 0.9);
-  background: rgba(5, 7, 11, 0.6);
-  padding: 2px 6px;
-  border-radius: 3px;
-}
-
-/* staggers the entrance for the first dozen cards on a render; results
-   beyond that just fall back to the base 0ms delay (n+ selectors don't
-   scale to 300 rows, and by then the sequential reveal wouldn't be seen
-   anyway since it's off-screen). */
-.card:nth-child(1) { animation-delay: 0.02s; }
-.card:nth-child(2) { animation-delay: 0.05s; }
-.card:nth-child(3) { animation-delay: 0.08s; }
-.card:nth-child(4) { animation-delay: 0.11s; }
-.card:nth-child(5) { animation-delay: 0.14s; }
-.card:nth-child(6) { animation-delay: 0.17s; }
-.card:nth-child(n+7) { animation-delay: 0.2s; }
-
-@keyframes card-in {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .card { animation: none; }
-}
-
-/* --tilt-x/--tilt-y are set live by app.js on mousemove (cursor-tracking
-   3D tilt); they default to 0deg so keyboard focus / a stray hover before
-   the first mousemove event still gets a sane flat lift. */
 .card:hover {
-  transform: perspective(700px) rotateX(var(--tilt-y, 0deg)) rotateY(var(--tilt-x, 0deg)) translateY(-3px);
-  border-color: var(--gold);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(232, 180, 90, 0.25);
+  transform: translateY(-2px);
+  border-color: var(--amber);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
 }
 
 .card canvas {
   width: 100%;
   height: 150px;
   display: block;
-  filter: saturate(1.04) contrast(1.03);
-  transition: filter 0.18s ease;
-}
-
-.card:hover canvas {
-  filter: saturate(1.16) contrast(1.08);
 }
 
 .card-body {
@@ -791,23 +747,24 @@ input[type="range"] {
 }
 
 .card-top h3 {
-  font-size: 15px;
+  font-family: var(--font-display);
+  font-size: 14.5px;
   font-weight: 700;
+  letter-spacing: 0.3px;
 }
 
+/* match score reads as a data readout, not a call-to-action — teal, not
+   amber, per the "never both accents on the same element" rule (amber
+   here is reserved for the selected pin / active states). */
 .match {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--gold);
-  background: rgba(232, 180, 90, 0.12);
-  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--teal);
+  background: rgba(62, 110, 106, 0.16);
+  border-radius: 2px;
   padding: 2px 7px;
   white-space: nowrap;
-  text-shadow: 0 0 12px rgba(232, 180, 90, 0.5);
-}
-
-#hero-badge b {
-  text-shadow: 0 0 20px rgba(232, 180, 90, 0.55);
 }
 
 .card-sub {
@@ -817,6 +774,7 @@ input[type="range"] {
 }
 
 .card-stats {
+  font-family: var(--font-mono);
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
@@ -824,11 +782,11 @@ input[type="range"] {
 }
 
 .card-stats span {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--text);
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 2px;
   padding: 3px 8px;
 }
 
@@ -854,18 +812,8 @@ input[type="range"] {
   overflow-y: auto;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 4px;
   position: relative;
-  animation: modal-in 0.28s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-@keyframes modal-in {
-  from { opacity: 0; transform: scale(0.97) translateY(6px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .modal { animation: none; }
 }
 
 .modal-close {
@@ -873,23 +821,19 @@ input[type="range"] {
   top: 12px;
   right: 12px;
   z-index: 5;
-  background: rgba(10, 13, 19, 0.7);
+  background: rgba(11, 13, 13, 0.75);
   border: 1px solid var(--line);
   color: var(--text);
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  border-radius: 3px;
   cursor: pointer;
-  font-size: 15px;
-  transition: transform 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease;
+  font-size: 14px;
+  transition: border-color 0.15s ease;
 }
 
-/* an aperture-iris twist on hover, like a lens closing down, instead of a
-   plain hover swap. */
 .modal-close:hover {
-  border-color: var(--gold);
-  transform: rotate(90deg);
-  box-shadow: 0 0 0 3px rgba(232, 180, 90, 0.15), 0 0 16px rgba(232, 180, 90, 0.4);
+  border-color: var(--amber);
 }
 
 #hero-canvas {
@@ -903,12 +847,15 @@ input[type="range"] {
 }
 
 .modal-body h2 {
-  font-size: 21px;
+  font-family: var(--font-display);
+  font-size: 20px;
+  letter-spacing: 0.3px;
 }
 
 #detail-sub {
+  font-family: var(--font-mono);
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
   margin-top: 4px;
 }
 
@@ -920,6 +867,7 @@ input[type="range"] {
 }
 
 #detail-stats {
+  font-family: var(--font-mono);
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 10px;
@@ -929,7 +877,7 @@ input[type="range"] {
 #detail-stats div {
   background: var(--panel-2);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 3px;
   padding: 10px;
   text-align: center;
 }
@@ -937,12 +885,15 @@ input[type="range"] {
 #detail-stats b {
   display: block;
   font-size: 16px;
-  color: var(--gold);
+  font-weight: 500;
+  color: var(--amber);
 }
 
 #detail-stats span {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
 }
 
 #detail-tags {
@@ -954,10 +905,11 @@ input[type="range"] {
 
 #detail-tags span {
   font-size: 12px;
-  color: var(--blue);
-  background: rgba(127, 180, 255, 0.1);
-  border-radius: 999px;
-  padding: 4px 11px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 4px 10px;
 }
 
 .actions {
@@ -968,42 +920,34 @@ input[type="range"] {
 }
 
 .btn {
+  font-family: var(--font-display);
   background: var(--panel-2);
   border: 1px solid var(--line);
   color: var(--text);
-  border-radius: 9px;
+  border-radius: 3px;
   padding: 10px 15px;
-  font-size: 13.5px;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
   cursor: pointer;
   text-decoration: none;
   display: inline-block;
+  transition: border-color 0.15s ease;
 }
 
 .btn:hover {
-  border-color: var(--gold);
+  border-color: var(--amber);
 }
 
 .btn.primary {
-  background: var(--gold);
-  border-color: var(--gold);
-  color: #1a1408;
-  font-weight: 700;
-  box-shadow: 0 0 16px rgba(232, 180, 90, 0.3);
-  transition: filter 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+  background: var(--amber);
+  border-color: var(--amber);
+  color: #0b0d0d;
 }
 
 .btn.primary:hover {
-  filter: brightness(1.08);
-  box-shadow: 0 0 24px rgba(232, 180, 90, 0.45);
-  transform: translateY(-1px);
-}
-
-.btn {
-  transition: border-color 0.15s ease, transform 0.15s ease;
-}
-
-.btn:active {
-  transform: translateY(1px);
+  filter: brightness(1.1);
 }
 
 #sv-panel {
@@ -1059,37 +1003,43 @@ input[type="range"] {
 }
 
 #tour-title strong {
-  font-size: 15px;
+  font-family: var(--font-display);
+  font-size: 14px;
+  letter-spacing: 0.4px;
   display: block;
 }
 
 #tour-title span {
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
   color: var(--muted);
 }
 
 #tour-modes {
   display: flex;
   gap: 4px;
-  background: rgba(18, 21, 29, 0.85);
+  background: rgba(19, 21, 21, 0.85);
   border: 1px solid var(--line);
-  border-radius: 9px;
+  border-radius: 3px;
   padding: 3px;
 }
 
 #tour-modes button {
+  font-family: var(--font-display);
   background: transparent;
   border: none;
   color: var(--muted);
-  border-radius: 7px;
+  border-radius: 2px;
   padding: 6px 13px;
-  font-size: 12.5px;
+  font-size: 11.5px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
   cursor: pointer;
 }
 
 #tour-modes button.active {
-  background: var(--gold);
-  color: #1a1408;
+  background: var(--amber);
+  color: #0b0d0d;
   font-weight: 700;
 }
 
@@ -1101,36 +1051,35 @@ input[type="range"] {
 }
 
 #tour-rooms button {
-  background: rgba(18, 21, 29, 0.85);
+  font-family: var(--font-mono);
+  background: rgba(19, 21, 21, 0.85);
   border: 1px solid var(--line);
   color: var(--text);
-  border-radius: 999px;
+  border-radius: 2px;
   padding: 5px 11px;
-  font-size: 11.5px;
+  font-size: 11px;
   cursor: pointer;
 }
 
 #tour-rooms button:hover {
-  border-color: var(--blue);
-  color: var(--blue);
+  border-color: var(--teal);
+  color: var(--teal);
 }
 
 #tour-close {
-  background: rgba(18, 21, 29, 0.85);
+  background: rgba(19, 21, 21, 0.85);
   border: 1px solid var(--line);
   color: var(--text);
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
+  width: 34px;
+  height: 34px;
+  border-radius: 3px;
   cursor: pointer;
-  font-size: 15px;
-  transition: transform 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease;
+  font-size: 14px;
+  transition: border-color 0.15s ease;
 }
 
 #tour-close:hover {
-  border-color: var(--gold);
-  transform: rotate(90deg);
-  box-shadow: 0 0 0 3px rgba(232, 180, 90, 0.15), 0 0 16px rgba(232, 180, 90, 0.4);
+  border-color: var(--amber);
 }
 
 #tour-canvas-wrap {
@@ -1153,34 +1102,36 @@ input[type="range"] {
 }
 
 #tour-help {
+  font-family: var(--font-mono);
   position: absolute;
   bottom: 14px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 10;
-  font-size: 12.5px;
+  font-size: 11.5px;
   color: #d8dce4;
-  background: rgba(10, 13, 19, 0.75);
+  background: rgba(11, 13, 13, 0.78);
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: 3px;
   padding: 7px 17px;
   white-space: nowrap;
 }
 
+/* the tour's lens readout is the template every other HUD tag in this
+   redesign follows: monospace, amber, sharp corners, no glow. */
 #tour-lens {
+  font-family: var(--font-mono);
   position: absolute;
   bottom: 14px;
   right: 16px;
   z-index: 10;
-  font-size: 12px;
-  color: var(--gold);
-  background: rgba(10, 13, 19, 0.75);
+  font-size: 11.5px;
+  color: var(--amber);
+  background: rgba(11, 13, 13, 0.78);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 3px;
   padding: 6px 11px;
   font-variant-numeric: tabular-nums;
-  text-shadow: 0 0 10px rgba(232, 180, 90, 0.5);
-  box-shadow: 0 0 18px rgba(0, 0, 0, 0.4);
 }
 
 /* -------------------------------------------------------------- settings */
@@ -1188,13 +1139,16 @@ input[type="range"] {
   width: min(480px, 92vw);
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 4px;
   padding: 22px;
   position: relative;
 }
 
 .settings-box h2 {
+  font-family: var(--font-display);
   font-size: 18px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
   margin-bottom: 4px;
 }
 
@@ -1213,7 +1167,7 @@ input[type="range"] {
   margin-top: 16px;
   padding: 12px;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 3px;
   background: var(--panel-2);
   font-size: 12px;
   color: var(--muted);
@@ -1225,90 +1179,69 @@ input[type="range"] {
   position: relative;
 }
 
-/* viewfinder corner brackets over the hero render, echoing the tour's own
-   "~35mm · FOV 70°" readout — the detail view reads as looking through a
-   camera at the listing, not just a diagram panel. */
+/* viewfinder AF-frame corner brackets over the hero render — same device
+   as the map viewport, amber only (no split-tone wash — the brief asks
+   for cinematic literally, via the framing device itself, not a colored
+   filter laid over the image). */
 .hero-wrap::before {
   content: '';
   position: absolute;
   inset: 14px;
   pointer-events: none;
   background-image:
-    linear-gradient(var(--gold), var(--gold)), linear-gradient(var(--gold), var(--gold)),
-    linear-gradient(var(--gold), var(--gold)), linear-gradient(var(--gold), var(--gold)),
-    linear-gradient(var(--gold), var(--gold)), linear-gradient(var(--gold), var(--gold)),
-    linear-gradient(var(--gold), var(--gold)), linear-gradient(var(--gold), var(--gold));
+    linear-gradient(var(--amber), var(--amber)), linear-gradient(var(--amber), var(--amber)),
+    linear-gradient(var(--amber), var(--amber)), linear-gradient(var(--amber), var(--amber)),
+    linear-gradient(var(--amber), var(--amber)), linear-gradient(var(--amber), var(--amber)),
+    linear-gradient(var(--amber), var(--amber)), linear-gradient(var(--amber), var(--amber));
   background-repeat: no-repeat;
-  background-size: 3px 34px, 34px 3px, 3px 34px, 34px 3px, 3px 34px, 34px 3px, 3px 34px, 34px 3px;
+  background-size: 2px 30px, 30px 2px, 2px 30px, 30px 2px, 2px 30px, 30px 2px, 2px 30px, 30px 2px;
   background-position:
     top left, top left,
     top right, top right,
     bottom left, bottom left,
     bottom right, bottom right;
-  opacity: 0.9;
-  filter: drop-shadow(0 0 6px rgba(232, 180, 90, 0.6));
-}
-
-/* a strong radial vignette + teal-orange split-tone wash over the hero
-   render — the "shot on a lens" read the corner brackets set up. */
-.hero-wrap::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(ellipse at 26% 18%, rgba(79, 209, 197, 0.22), transparent 58%),
-    radial-gradient(ellipse at 74% 88%, rgba(255, 157, 92, 0.26), transparent 58%),
-    radial-gradient(ellipse at center, transparent 42%, rgba(0, 0, 0, 0.62) 100%);
+  opacity: 0.8;
 }
 
 #hero-badge {
+  font-family: var(--font-mono);
   position: absolute;
   left: 18px;
   bottom: 14px;
-  background: rgba(10, 13, 19, 0.82);
-  border: 1px solid var(--gold);
-  border-radius: 12px;
+  background: rgba(11, 13, 13, 0.85);
+  border: 1px solid var(--amber);
+  border-radius: 3px;
   padding: 8px 14px;
   display: flex;
   align-items: baseline;
   gap: 8px;
-  backdrop-filter: blur(4px);
 }
 
 #hero-badge b {
-  font-size: 26px;
-  color: var(--gold);
-  font-weight: 800;
+  font-size: 24px;
+  font-weight: 500;
+  color: var(--amber);
 }
 
 #hero-badge span {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--muted);
-  text-transform: capitalize;
+  text-transform: uppercase;
 }
 
 .section-h {
+  font-family: var(--font-display);
   font-size: 12px;
   text-transform: uppercase;
-  letter-spacing: 0.9px;
+  letter-spacing: 1.3px;
   color: var(--text);
   font-weight: 700;
   margin: 22px 0 11px;
   padding-bottom: 7px;
-  padding-left: 19px;
   border-bottom: 1px solid var(--line);
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  /* a clapperboard-stripe tab before each section title — background-image
-     rather than a ::before pseudo-element, since this element is a flex
-     container: a generated ::before would become its own flex item and
-     break the title/sub-label space-between layout. */
-  background-image: repeating-linear-gradient(50deg, #050708 0 3px, #e8e4da 3px 6px);
-  background-size: 13px 9px;
-  background-repeat: no-repeat;
-  background-position: left 2px;
 }
 
 .section-sub {
@@ -1337,8 +1270,9 @@ input[type="range"] {
 }
 
 .suit-score {
-  font-size: 13px;
-  font-weight: 700;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 500;
   color: var(--text);
   font-variant-numeric: tabular-nums;
   display: inline-flex;
@@ -1358,7 +1292,7 @@ input[type="range"] {
 }
 
 .conf-medium {
-  background: var(--gold);
+  background: var(--amber);
 }
 
 .conf-low {
@@ -1368,15 +1302,15 @@ input[type="range"] {
 .suit-bar {
   height: 5px;
   background: rgba(255, 255, 255, 0.07);
-  border-radius: 3px;
+  border-radius: 2px;
   margin: 5px 0 4px;
   overflow: hidden;
 }
 
 .suit-bar>div {
   height: 100%;
-  background: var(--c, var(--gold));
-  border-radius: 3px;
+  background: var(--c, var(--amber));
+  border-radius: 2px;
 }
 
 .suit-note {
@@ -1389,7 +1323,7 @@ input[type="range"] {
 .intel-sun {
   background: var(--panel-2);
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 3px;
   padding: 13px 15px;
   margin-bottom: 12px;
 }
@@ -1399,6 +1333,7 @@ input[type="range"] {
 }
 
 .sun-times {
+  font-family: var(--font-mono);
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 8px;
@@ -1410,24 +1345,26 @@ input[type="range"] {
 
 .sun-times b {
   display: block;
-  font-size: 12.5px;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text);
   font-variant-numeric: tabular-nums;
 }
 
 .sun-times span {
-  font-size: 10px;
+  font-size: 9.5px;
   color: var(--muted);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.4px;
 }
 
+/* golden hour / blue hour map naturally onto the two brand accents. */
 .sun-times .gold b {
-  color: var(--gold);
+  color: var(--amber);
 }
 
 .sun-times .blue b {
-  color: var(--blue);
+  color: var(--teal);
 }
 
 .sun-now {
@@ -1447,7 +1384,7 @@ input[type="range"] {
 .intel-cell {
   background: var(--panel-2);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 3px;
   padding: 9px 11px;
 }
 
@@ -1473,22 +1410,22 @@ input[type="range"] {
 .ic-meter {
   height: 5px;
   background: rgba(255, 255, 255, 0.07);
-  border-radius: 3px;
+  border-radius: 2px;
   margin: 6px 0 2px;
   overflow: hidden;
 }
 
 .ic-meter>div {
   height: 100%;
-  background: var(--c, var(--gold));
-  border-radius: 3px;
+  background: var(--c, var(--amber));
+  border-radius: 2px;
 }
 
 .intel-weather {
   margin-top: 11px;
   background: var(--panel-2);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 3px;
   padding: 11px 13px;
   font-size: 12.5px;
   color: var(--text);
@@ -1518,7 +1455,7 @@ input[type="range"] {
 }
 
 .rev-stars {
-  color: var(--gold);
+  color: var(--amber);
   font-size: 15px;
   letter-spacing: 1px;
 }
@@ -1603,7 +1540,7 @@ input[type="range"] {
   width: 96px;
   height: 96px;
   object-fit: cover;
-  border-radius: 8px;
+  border-radius: 3px;
   border: 1px solid var(--line);
   flex-shrink: 0;
 }
@@ -1616,20 +1553,23 @@ input[type="range"] {
 }
 
 .place-info-body a {
-  font-size: 12.5px;
-  color: var(--blue);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--teal);
 }
 
 /* leaflet dark tweaks */
 .leaflet-container {
-  background: #0a0c10;
+  background: #08090a;
   font: inherit;
 }
 
 .leaflet-tooltip {
+  font-family: var(--font-body);
   background: var(--panel-2);
   border: 1px solid var(--line);
   color: var(--text);
+  border-radius: 2px;
 }
 
 .maplibregl-popup {

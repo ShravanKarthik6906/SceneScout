@@ -3,12 +3,19 @@
 
 import { TYPES } from './data.js';
 
+const AMBER = '#c9962b';
+const TEAL = '#3e6e6a';
+
 let map, radiusCircle, centerMarker;
 const markers = new Map(); // listing id -> L.circleMarker
+let selectedId = null;
 
 export function initMap({ onCenterChange, onMarkerClick }) {
-  map = L.map('map2d', { zoomControl: true, attributionControl: true })
+  // zoomControl lives bottom-left so it never collides with the top-left
+  // exposure-style HUD readout the design brief calls for.
+  map = L.map('map2d', { zoomControl: false, attributionControl: true })
     .setView([34.04, -118.25], 10);
+  L.control.zoom({ position: 'bottomleft' }).addTo(map);
 
   L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
     maxZoom: 19,
@@ -25,6 +32,24 @@ export function initMap({ onCenterChange, onMarkerClick }) {
   return map;
 }
 
+// Rack-focus: on hovering one pin, softly blur every other pin instead of
+// glowing the hovered one — the one other deliberate motion moment the
+// brief calls for, beyond the search-submit iris wipe.
+function blurOtherMarkers(hoveredId) {
+  for (const [id, m] of markers) {
+    const el = m.getElement();
+    if (!el) continue;
+    el.style.filter = id === hoveredId ? '' : 'blur(1.5px)';
+    el.style.transition = 'filter 0.15s ease';
+  }
+}
+function clearBlur() {
+  for (const [, m] of markers) {
+    const el = m.getElement();
+    if (el) el.style.filter = '';
+  }
+}
+
 export function updateMap(state, results, allLocations) {
   // Guard: if initMap crashed or hasn't finished, map is undefined — bail
   // instead of throwing on addTo/addLayer.
@@ -38,11 +63,11 @@ export function updateMap(state, results, allLocations) {
 
   if (!radiusCircle) {
     radiusCircle = L.circle([center.lat, center.lng], {
-      radius: radiusM, color: '#e8b45a', weight: 1.5, opacity: 0.7,
-      fillColor: '#e8b45a', fillOpacity: 0.06, interactive: false,
+      radius: radiusM, color: AMBER, weight: 1.5, opacity: 0.7,
+      fillColor: AMBER, fillOpacity: 0.06, interactive: false,
     }).addTo(map);
     centerMarker = L.circleMarker([center.lat, center.lng], {
-      radius: 6, color: '#fff', weight: 2, fillColor: '#e8b45a', fillOpacity: 1, interactive: false,
+      radius: 6, color: '#fff', weight: 2, fillColor: AMBER, fillOpacity: 1, interactive: false,
     }).addTo(map);
   } else {
     radiusCircle.setLatLng([center.lat, center.lng]).setRadius(radiusM);
@@ -52,19 +77,41 @@ export function updateMap(state, results, allLocations) {
   const resultIds = new Set(results.map(r => r.id));
   for (const loc of allLocations) {
     const inResults = resultIds.has(loc.id);
-    const t = TYPES[loc.type] || { icon: loc._icon || '📍', label: loc._label || 'Location', color: loc._color || '#7a8a99' };
-    const color = t.color;
+    const t = TYPES[loc.type] || { icon: loc._icon || '📍', label: loc._label || 'Location' };
     let m = markers.get(loc.id);
     if (!m) {
       m = L.circleMarker([loc.lat, loc.lng], { radius: 9, weight: 2 }).addTo(map);
       m.bindTooltip(`${t.icon} ${loc.name}`, { direction: 'top', offset: [0, -8] });
       m.on('click', () => map._onMarkerClick(loc.id));
+      m.on('mouseover', () => blurOtherMarkers(loc.id));
+      m.on('mouseout', clearBlur);
       markers.set(loc.id, m);
     }
+    const selected = loc.id === selectedId;
+    // Map markers are uniformly teal (secondary data); amber is reserved
+    // for the selected pin — the two brand accents never share an element.
     m.setStyle(inResults
-      ? { color: '#ffffff', fillColor: color, fillOpacity: 0.95, opacity: 1, radius: 9 }
-      : { color: '#555b66', fillColor: '#2a2f3a', fillOpacity: 0.7, opacity: 0.6, radius: 6 });
+      ? {
+          color: selected ? AMBER : '#ffffff',
+          fillColor: selected ? AMBER : TEAL,
+          fillOpacity: 0.95, opacity: 1, radius: selected ? 11 : 9,
+        }
+      : { color: '#4a4f4f', fillColor: '#262b2b', fillOpacity: 0.7, opacity: 0.6, radius: 6 });
   }
+}
+
+// Marks a location's pin as the active selection (amber) — called when its
+// detail view opens; cleared when it closes.
+export function setSelectedMarker(id) {
+  selectedId = id;
+  const m = markers.get(id);
+  if (m) m.setStyle({ color: AMBER, fillColor: AMBER, radius: 11 });
+}
+export function clearSelectedMarker() {
+  const prev = selectedId;
+  selectedId = null;
+  const m = prev && markers.get(prev);
+  if (m) m.setStyle({ color: '#ffffff', fillColor: TEAL, radius: 9 });
 }
 
 export function flyToListing(loc) {
