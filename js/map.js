@@ -6,19 +6,7 @@ import { TYPES } from './data.js';
 let map, radiusCircle, centerMarker;
 const markers = new Map(); // listing id -> L.circleMarker
 
-export async function initMap({ onCenterChange, onMarkerClick, locations = [] }) {
-  // Geocode each location using its address to ensure up‑to‑date coordinates.
-  // locations defaults to [] so a missing/undefined arg can't crash this —
-  // Promise.all([]) resolves immediately instead of throwing.
-  await Promise.all(locations.map(async (loc) => {
-    const response = await fetch(`/api/geocode?q=${encodeURIComponent(loc.address)}`);
-    const data = await response.json();
-    if (data && data.length > 0) {
-      loc.lat = parseFloat(data[0].lat);
-      loc.lng = parseFloat(data[0].lon);
-    }
-  }));
-
+export function initMap({ onCenterChange, onMarkerClick }) {
   map = L.map('map2d', { zoomControl: true, attributionControl: true })
     .setView([34.04, -118.25], 10);
 

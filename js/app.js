@@ -855,7 +855,7 @@ async function init() {
   initFilters();
   getOrCreateExploreButton();
   syncFilterControls();
-  initMap({
+  await initMap({
     onCenterChange: (lat, lng) => { moveCenter(lat, lng); render(); },
     onMarkerClick: (id) => {
       const results = runSearch();
