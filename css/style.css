@@ -148,6 +148,23 @@ header::after {
   z-index: 1;
 }
 
+/* a small lens-glass emblem before the wordmark — inline-block so it sits
+   beside the mixed text/<em> content without turning .logo into a flex
+   container (which would risk splitting "Scene"/<em>Scout</em> apart). */
+.logo::before {
+  content: '';
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 8px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 35% 32%, rgba(255, 255, 255, 0.55), transparent 42%),
+    radial-gradient(circle, #1a1408 28%, var(--gold) 64%, #1a1408 70%, transparent 74%);
+  box-shadow: 0 0 9px rgba(232, 180, 90, 0.5);
+}
+
 .logo em {
   color: var(--gold);
   font-style: normal;
@@ -201,12 +218,50 @@ header .spacer {
   flex-direction: column;
   background: linear-gradient(165deg, var(--panel) 0%, #0f1116 70%, #0d0f14 100%);
   border-right: 1px solid var(--line);
+  position: relative;
+}
+
+/* a film-strip sprocket-hole edge along the sidebar/map seam — every
+   section inside already keeps 14-16px of right padding, so this 8px
+   decorative strip never overlaps real content. */
+#sidebar::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 8px;
+  background-image: radial-gradient(circle, rgba(0, 0, 0, 0.65) 2.2px, transparent 2.4px);
+  background-size: 8px 20px;
+  background-repeat: repeat-y;
+  background-position: center;
+  opacity: 0.6;
+  pointer-events: none;
 }
 
 #map {
   flex: 1;
   background: #0a0c10;
   position: relative;
+}
+
+/* rule-of-thirds viewfinder grid — the classic camera framing aid, kept to
+   thin lines rather than corner brackets since both top corners are
+   already occupied by real controls (zoom, 2D/3D toggle). z-index 400
+   sits above the tile layer (z-index:auto) but below the toggle (500) and
+   Leaflet's own marker panes, and pointer-events:none keeps it fully
+   click-through. */
+#map::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 400;
+  pointer-events: none;
+  background-image:
+    linear-gradient(90deg, transparent calc(33.333% - 0.5px), rgba(232, 180, 90, 0.14) calc(33.333% - 0.5px), rgba(232, 180, 90, 0.14) calc(33.333% + 0.5px), transparent calc(33.333% + 0.5px)),
+    linear-gradient(90deg, transparent calc(66.666% - 0.5px), rgba(232, 180, 90, 0.14) calc(66.666% - 0.5px), rgba(232, 180, 90, 0.14) calc(66.666% + 0.5px), transparent calc(66.666% + 0.5px)),
+    linear-gradient(0deg, transparent calc(33.333% - 0.5px), rgba(232, 180, 90, 0.14) calc(33.333% - 0.5px), rgba(232, 180, 90, 0.14) calc(33.333% + 0.5px), transparent calc(33.333% + 0.5px)),
+    linear-gradient(0deg, transparent calc(66.666% - 0.5px), rgba(232, 180, 90, 0.14) calc(66.666% - 0.5px), rgba(232, 180, 90, 0.14) calc(66.666% + 0.5px), transparent calc(66.666% + 0.5px));
 }
 
 #map2d,
@@ -573,6 +628,7 @@ input[type="range"] {
   grid-auto-rows: max-content;
   align-content: start;
   gap: 12px;
+  counter-reset: frame;
 }
 
 .empty {
@@ -584,6 +640,7 @@ input[type="range"] {
 }
 
 .card {
+  position: relative;
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -591,6 +648,41 @@ input[type="range"] {
   cursor: pointer;
   transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
   animation: card-in 0.4s ease backwards;
+  counter-increment: frame;
+}
+
+/* a sprocket-perforation strip along the top edge of the thumbnail (film
+   leader) plus a burned-in frame counter, so each result reads as a
+   numbered film cell rather than a plain card. Pure CSS via counter() —
+   no per-card markup or JS needed. */
+.card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 6px;
+  z-index: 2;
+  pointer-events: none;
+  background-image: radial-gradient(circle, rgba(0, 0, 0, 0.6) 1.6px, transparent 1.8px);
+  background-size: 16px 6px;
+  background-repeat: repeat-x;
+}
+
+.card::after {
+  content: 'FRAME ' counter(frame, decimal-leading-zero);
+  position: absolute;
+  top: 9px;
+  left: 8px;
+  z-index: 2;
+  pointer-events: none;
+  font-family: 'SF Mono', 'Courier New', monospace;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  color: rgba(232, 180, 90, 0.9);
+  background: rgba(5, 7, 11, 0.6);
+  padding: 2px 6px;
+  border-radius: 3px;
 }
 
 /* staggers the entrance for the first dozen cards on a render; results
@@ -734,10 +826,15 @@ input[type="range"] {
   border-radius: 50%;
   cursor: pointer;
   font-size: 15px;
+  transition: transform 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease;
 }
 
+/* an aperture-iris twist on hover, like a lens closing down, instead of a
+   plain hover swap. */
 .modal-close:hover {
   border-color: var(--gold);
+  transform: rotate(90deg);
+  box-shadow: 0 0 0 3px rgba(232, 180, 90, 0.15), 0 0 16px rgba(232, 180, 90, 0.4);
 }
 
 #hero-canvas {
@@ -972,10 +1069,13 @@ input[type="range"] {
   border-radius: 50%;
   cursor: pointer;
   font-size: 15px;
+  transition: transform 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease;
 }
 
 #tour-close:hover {
   border-color: var(--gold);
+  transform: rotate(90deg);
+  box-shadow: 0 0 0 3px rgba(232, 180, 90, 0.15), 0 0 16px rgba(232, 180, 90, 0.4);
 }
 
 #tour-canvas-wrap {
@@ -1141,10 +1241,19 @@ input[type="range"] {
   font-weight: 700;
   margin: 22px 0 11px;
   padding-bottom: 7px;
+  padding-left: 19px;
   border-bottom: 1px solid var(--line);
   display: flex;
   justify-content: space-between;
   align-items: baseline;
+  /* a clapperboard-stripe tab before each section title — background-image
+     rather than a ::before pseudo-element, since this element is a flex
+     container: a generated ::before would become its own flex item and
+     break the title/sub-label space-between layout. */
+  background-image: repeating-linear-gradient(50deg, #050708 0 3px, #e8e4da 3px 6px);
+  background-size: 13px 9px;
+  background-repeat: no-repeat;
+  background-position: left 2px;
 }
 
 .section-sub {
