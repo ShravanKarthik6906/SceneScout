@@ -1,12 +1,15 @@
 :root {
-  --bg: #0c0e13;
-  --panel: #12151d;
-  --panel-2: #171b25;
-  --line: #232837;
-  --text: #e9e6de;
-  --muted: #9aa0ad;
+  --bg: #0a0b0e;
+  --panel: #12141a;
+  --panel-2: #171a22;
+  --line: #262b38;
+  --text: #ece7dc;
+  --muted: #98a0ac;
   --gold: #e8b45a;
+  --gold-warm: #ff9d5c;
+  --teal: #4fd1c5;
   --blue: #7fb4ff;
+  --grain-opacity: 0.045;
 }
 
 * {
@@ -24,6 +27,57 @@ body {
   overflow: hidden;
 }
 
+/* ------------------------------------------------------- cinematic grade */
+/* A soft vignette + drifting film-grain layer over the whole app — the
+   "shot on film, not rendered flat" texture the rest of this section leans
+   on. Both are fixed/pointer-events:none so they never intercept clicks,
+   and sit above even the fullscreen 3D tour (.overlay is z-index 1000) so
+   the grade reads consistently everywhere, including inside the walk. */
+body::before,
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+body::before {
+  z-index: 9998;
+  background:
+    radial-gradient(ellipse at 50% 40%, transparent 45%, rgba(3, 2, 4, 0.55) 100%),
+    linear-gradient(180deg, rgba(255, 157, 92, 0.035), transparent 22%);
+  mix-blend-mode: multiply;
+}
+
+body::after {
+  z-index: 9999;
+  opacity: var(--grain-opacity);
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  animation: grain-shift 0.6s steps(3) infinite;
+}
+
+@keyframes grain-shift {
+  0% { transform: translate(0, 0); }
+  33% { transform: translate(-1.5%, 1%); }
+  66% { transform: translate(1%, -1.5%); }
+  100% { transform: translate(0, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::after { animation: none; }
+}
+
+/* thin custom scrollbars matching the grade, instead of the default chrome */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 5px;
+  border: 2px solid var(--panel);
+}
+::-webkit-scrollbar-thumb:hover { background: #333a4a; }
+
 /* ---------------------------------------------------------------- header */
 header {
   height: 58px;
@@ -31,19 +85,48 @@ header {
   align-items: center;
   gap: 14px;
   padding: 0 18px;
+  position: relative;
   background: linear-gradient(180deg, #10131b, #0d1017);
   border-bottom: 1px solid var(--line);
+  overflow: hidden;
+}
+
+/* a slow-drifting warm light leak in the header corner — the one place in
+   the chrome that's always on screen, so it carries the "surreal" half of
+   the brief without needing a photo to sit behind it. */
+header::before {
+  content: '';
+  position: absolute;
+  top: -60%;
+  left: -6%;
+  width: 260px;
+  height: 260px;
+  background: radial-gradient(circle, rgba(255, 157, 92, 0.16), transparent 70%);
+  pointer-events: none;
+  animation: leak-drift 14s ease-in-out infinite;
+}
+
+@keyframes leak-drift {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(40px, 12px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  header::before { animation: none; }
 }
 
 .logo {
   font-size: 19px;
   font-weight: 800;
-  letter-spacing: 0.4px;
+  letter-spacing: 0.6px;
+  position: relative;
+  z-index: 1;
 }
 
 .logo em {
   color: var(--gold);
   font-style: normal;
+  text-shadow: 0 0 18px rgba(232, 180, 90, 0.45);
 }
 
 .tagline {
@@ -51,6 +134,15 @@ header {
   color: var(--muted);
   border-left: 1px solid var(--line);
   padding-left: 14px;
+  position: relative;
+  z-index: 1;
+}
+
+.tagline::before {
+  content: '● ';
+  color: #e0523f;
+  font-size: 8px;
+  vertical-align: middle;
 }
 
 header .spacer {
@@ -82,7 +174,7 @@ header .spacer {
   min-width: 340px;
   display: flex;
   flex-direction: column;
-  background: var(--panel);
+  background: linear-gradient(165deg, var(--panel) 0%, #0f1116 70%, #0d0f14 100%);
   border-right: 1px solid var(--line);
 }
 
@@ -204,11 +296,13 @@ header .spacer {
   font: inherit;
   font-size: 13px;
   line-height: 1.45;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
 #ai-input:focus {
   outline: none;
   border-color: var(--gold);
+  box-shadow: 0 0 0 3px rgba(232, 180, 90, 0.14), 0 0 22px rgba(232, 180, 90, 0.12);
 }
 
 #ai-go {
@@ -221,10 +315,13 @@ header .spacer {
   padding: 8px 16px;
   font-size: 13px;
   cursor: pointer;
+  box-shadow: 0 0 16px rgba(232, 180, 90, 0.35);
+  transition: filter 0.15s ease, box-shadow 0.15s ease;
 }
 
 #ai-go:hover {
   filter: brightness(1.08);
+  box-shadow: 0 0 24px rgba(232, 180, 90, 0.5);
 }
 
 .ai-examples {
@@ -467,18 +564,47 @@ input[type="range"] {
   border-radius: 12px;
   overflow: hidden;
   cursor: pointer;
-  transition: transform 0.12s, border-color 0.12s;
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+  animation: card-in 0.4s ease backwards;
+}
+
+/* staggers the entrance for the first dozen cards on a render; results
+   beyond that just fall back to the base 0ms delay (n+ selectors don't
+   scale to 300 rows, and by then the sequential reveal wouldn't be seen
+   anyway since it's off-screen). */
+.card:nth-child(1) { animation-delay: 0.02s; }
+.card:nth-child(2) { animation-delay: 0.05s; }
+.card:nth-child(3) { animation-delay: 0.08s; }
+.card:nth-child(4) { animation-delay: 0.11s; }
+.card:nth-child(5) { animation-delay: 0.14s; }
+.card:nth-child(6) { animation-delay: 0.17s; }
+.card:nth-child(n+7) { animation-delay: 0.2s; }
+
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card { animation: none; }
 }
 
 .card:hover {
-  transform: translateY(-2px);
+  transform: translateY(-3px);
   border-color: var(--gold);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(232, 180, 90, 0.25);
 }
 
 .card canvas {
   width: 100%;
   height: 150px;
   display: block;
+  filter: saturate(1.04) contrast(1.03);
+  transition: filter 0.18s ease;
+}
+
+.card:hover canvas {
+  filter: saturate(1.16) contrast(1.08);
 }
 
 .card-body {
@@ -505,6 +631,11 @@ input[type="range"] {
   border-radius: 6px;
   padding: 2px 7px;
   white-space: nowrap;
+  text-shadow: 0 0 12px rgba(232, 180, 90, 0.5);
+}
+
+#hero-badge b {
+  text-shadow: 0 0 20px rgba(232, 180, 90, 0.55);
 }
 
 .card-sub {
@@ -553,6 +684,16 @@ input[type="range"] {
   border: 1px solid var(--line);
   border-radius: 16px;
   position: relative;
+  animation: modal-in 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes modal-in {
+  from { opacity: 0; transform: scale(0.97) translateY(6px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modal { animation: none; }
 }
 
 .modal-close {
@@ -670,10 +811,22 @@ input[type="range"] {
   border-color: var(--gold);
   color: #1a1408;
   font-weight: 700;
+  box-shadow: 0 0 16px rgba(232, 180, 90, 0.3);
+  transition: filter 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
 }
 
 .btn.primary:hover {
   filter: brightness(1.08);
+  box-shadow: 0 0 24px rgba(232, 180, 90, 0.45);
+  transform: translateY(-1px);
+}
+
+.btn {
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.btn:active {
+  transform: translateY(1px);
 }
 
 #sv-panel {
@@ -846,6 +999,8 @@ input[type="range"] {
   border-radius: 8px;
   padding: 6px 11px;
   font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 10px rgba(232, 180, 90, 0.5);
+  box-shadow: 0 0 18px rgba(0, 0, 0, 0.4);
 }
 
 /* -------------------------------------------------------------- settings */
@@ -888,6 +1043,42 @@ input[type="range"] {
 /* --------------------------------------------------- detail intelligence */
 .hero-wrap {
   position: relative;
+}
+
+/* viewfinder corner brackets over the hero render, echoing the tour's own
+   "~35mm · FOV 70°" readout — the detail view reads as looking through a
+   camera at the listing, not just a diagram panel. */
+.hero-wrap::before {
+  content: '';
+  position: absolute;
+  inset: 14px;
+  pointer-events: none;
+  background-image:
+    linear-gradient(var(--gold), var(--gold)), linear-gradient(var(--gold), var(--gold)),
+    linear-gradient(var(--gold), var(--gold)), linear-gradient(var(--gold), var(--gold)),
+    linear-gradient(var(--gold), var(--gold)), linear-gradient(var(--gold), var(--gold)),
+    linear-gradient(var(--gold), var(--gold)), linear-gradient(var(--gold), var(--gold));
+  background-repeat: no-repeat;
+  background-size: 2px 22px, 22px 2px, 2px 22px, 22px 2px, 2px 22px, 22px 2px, 2px 22px, 22px 2px;
+  background-position:
+    top left, top left,
+    top right, top right,
+    bottom left, bottom left,
+    bottom right, bottom right;
+  opacity: 0.55;
+}
+
+/* a soft radial vignette + faint teal-orange split-tone wash over the hero
+   render — the "shot on a lens" read the corner brackets set up. */
+.hero-wrap::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at 30% 20%, rgba(79, 209, 197, 0.06), transparent 55%),
+    radial-gradient(ellipse at 70% 85%, rgba(255, 157, 92, 0.08), transparent 55%),
+    radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, 0.4) 100%);
 }
 
 #hero-badge {
