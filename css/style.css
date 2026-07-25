@@ -9,7 +9,8 @@
   --gold-warm: #ff9d5c;
   --teal: #4fd1c5;
   --blue: #7fb4ff;
-  --grain-opacity: 0.045;
+  --grain-opacity: 0.1;
+  --letterbox: 12px;
 }
 
 * {
@@ -41,11 +42,21 @@ body::after {
   pointer-events: none;
 }
 
+/* Letterbox bars (literal cinema-frame device) + a full-viewport
+   teal/orange split-tone wash + vignette, all as one layered background so
+   body's two pseudo-element slots (the other is the grain layer below)
+   are enough — no extra DOM elements needed. mix-blend-mode: multiply
+   means the solid black bar layers darken straight to black regardless of
+   what's under them, and stay clear of the tour's bottom-anchored controls
+   (#tour-help/#tour-lens sit at bottom:14px) by keeping the bars at 12px. */
 body::before {
   z-index: 9998;
   background:
-    radial-gradient(ellipse at 50% 40%, transparent 45%, rgba(3, 2, 4, 0.55) 100%),
-    linear-gradient(180deg, rgba(255, 157, 92, 0.035), transparent 22%);
+    linear-gradient(#000, #000) top / 100% var(--letterbox) no-repeat,
+    linear-gradient(#000, #000) bottom / 100% var(--letterbox) no-repeat,
+    radial-gradient(ellipse at 16% 10%, rgba(79, 209, 197, 0.16), transparent 42%) 0 0 / 100% 100% no-repeat,
+    radial-gradient(ellipse at 84% 92%, rgba(255, 157, 92, 0.2), transparent 42%) 0 0 / 100% 100% no-repeat,
+    radial-gradient(ellipse at 50% 42%, transparent 32%, rgba(3, 2, 4, 0.72) 100%) 0 0 / 100% 100% no-repeat;
   mix-blend-mode: multiply;
 }
 
@@ -91,28 +102,42 @@ header {
   overflow: hidden;
 }
 
-/* a slow-drifting warm light leak in the header corner — the one place in
+/* a slow-drifting warm/teal light leak across the header — the one place in
    the chrome that's always on screen, so it carries the "surreal" half of
    the brief without needing a photo to sit behind it. */
 header::before {
   content: '';
   position: absolute;
-  top: -60%;
-  left: -6%;
-  width: 260px;
-  height: 260px;
-  background: radial-gradient(circle, rgba(255, 157, 92, 0.16), transparent 70%);
+  top: -140%;
+  left: -8%;
+  width: 480px;
+  height: 480px;
+  background: radial-gradient(circle, rgba(255, 157, 92, 0.32), transparent 68%);
   pointer-events: none;
   animation: leak-drift 14s ease-in-out infinite;
+  filter: blur(2px);
+}
+
+header::after {
+  content: '';
+  position: absolute;
+  top: -160%;
+  right: 8%;
+  width: 380px;
+  height: 380px;
+  background: radial-gradient(circle, rgba(79, 209, 197, 0.22), transparent 70%);
+  pointer-events: none;
+  animation: leak-drift 18s ease-in-out infinite reverse;
+  filter: blur(2px);
 }
 
 @keyframes leak-drift {
   0%, 100% { transform: translate(0, 0); }
-  50% { transform: translate(40px, 12px); }
+  50% { transform: translate(60px, 24px); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  header::before { animation: none; }
+  header::before, header::after { animation: none; }
 }
 
 .logo {
@@ -1059,16 +1084,17 @@ input[type="range"] {
     linear-gradient(var(--gold), var(--gold)), linear-gradient(var(--gold), var(--gold)),
     linear-gradient(var(--gold), var(--gold)), linear-gradient(var(--gold), var(--gold));
   background-repeat: no-repeat;
-  background-size: 2px 22px, 22px 2px, 2px 22px, 22px 2px, 2px 22px, 22px 2px, 2px 22px, 22px 2px;
+  background-size: 3px 34px, 34px 3px, 3px 34px, 34px 3px, 3px 34px, 34px 3px, 3px 34px, 34px 3px;
   background-position:
     top left, top left,
     top right, top right,
     bottom left, bottom left,
     bottom right, bottom right;
-  opacity: 0.55;
+  opacity: 0.9;
+  filter: drop-shadow(0 0 6px rgba(232, 180, 90, 0.6));
 }
 
-/* a soft radial vignette + faint teal-orange split-tone wash over the hero
+/* a strong radial vignette + teal-orange split-tone wash over the hero
    render — the "shot on a lens" read the corner brackets set up. */
 .hero-wrap::after {
   content: '';
@@ -1076,9 +1102,9 @@ input[type="range"] {
   inset: 0;
   pointer-events: none;
   background:
-    radial-gradient(ellipse at 30% 20%, rgba(79, 209, 197, 0.06), transparent 55%),
-    radial-gradient(ellipse at 70% 85%, rgba(255, 157, 92, 0.08), transparent 55%),
-    radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, 0.4) 100%);
+    radial-gradient(ellipse at 26% 18%, rgba(79, 209, 197, 0.22), transparent 58%),
+    radial-gradient(ellipse at 74% 88%, rgba(255, 157, 92, 0.26), transparent 58%),
+    radial-gradient(ellipse at center, transparent 42%, rgba(0, 0, 0, 0.62) 100%);
 }
 
 #hero-badge {
