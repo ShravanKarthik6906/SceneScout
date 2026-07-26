@@ -1,40 +1,22 @@
 // 3D map mode — a Google-Earth-style tilted view with extruded 3D buildings,
 // powered by MapLibre GL JS + OpenFreeMap vector tiles (both free, no API key).
-// Lazy-loaded the first time the user flips to 3D so it never costs the 2D
-// experience anything. Falls back to a link out to Google Earth if the library
-// or tiles can't load (e.g. offline).
+// MapLibre is a static <script> include in index.html (like Leaflet), always
+// present at load rather than fetched on demand, so this module can assume
+// window.maplibregl exists. Falls back to a link out to Google Earth if the
+// map's tiles can't load (e.g. offline).
 //
 // For true photorealistic 3D tiles you'd swap the style source for Google's
 // Photorealistic 3D Tiles or Cesium ion here — the rest of the app is unchanged.
 
 import { TYPES } from './catalog.js';
 
-const MAPLIBRE_JS = '/vendor/maplibre-gl/maplibre-gl.js';
-const MAPLIBRE_CSS = '/vendor/maplibre-gl/maplibre-gl.css';
 const STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 
 let map = null;         // maplibre map
-let loadPromise = null;
 let markers = [];
 let onMarkerClick = null;
 let onMapClick = null;  // fires on any map click when explore mode is active
 let failed = false;
-
-function loadLib() {
-  if (window.maplibregl) return Promise.resolve();
-  if (loadPromise) return loadPromise;
-  loadPromise = new Promise((resolve, reject) => {
-    const css = document.createElement('link');
-    css.rel = 'stylesheet'; css.href = MAPLIBRE_CSS;
-    document.head.appendChild(css);
-    const s = document.createElement('script');
-    s.src = MAPLIBRE_JS;
-    s.onload = resolve;
-    s.onerror = () => reject(new Error('maplibre load failed'));
-    document.head.appendChild(s);
-  });
-  return loadPromise;
-}
 
 function addBuildingLayer() {
   if (!map) return;
@@ -71,13 +53,6 @@ export async function ensure3D(container, cb, mapClickCb) {
   onMarkerClick = cb;
   onMapClick = mapClickCb || null;
   if (failed) return false;
-  try {
-    await loadLib();
-  } catch {
-    failed = true;
-    container.innerHTML = fallbackHTML();
-    return false;
-  }
   if (!map) {
     map = new maplibregl.Map({
       container,
@@ -92,7 +67,18 @@ export async function ensure3D(container, cb, mapClickCb) {
     // the container may still be settling layout when the map is created; a
     // resize once the first frame loads guarantees tiles fill the pane.
     map.on('load', () => map.resize());
-    map.on('error', (e) => console.warn('[map3d]', e && e.error && e.error.message));
+    map.on('error', (e) => {
+      console.warn('[map3d]', e && e.error && e.error.message);
+      // A style/tile fetch failure before the map has ever painted anything
+      // (offline, blocked host, ...) leaves a blank pane — fall back to a
+      // Google Earth link rather than showing nothing.
+      if (!map.isStyleLoaded()) {
+        failed = true;
+        map.remove();
+        map = null;
+        container.innerHTML = fallbackHTML();
+      }
+    });
     map.on('click', (e) => {
       if (onMapClick) onMapClick(e.lngLat.lat, e.lngLat.lng);
     });

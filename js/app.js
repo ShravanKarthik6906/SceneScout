@@ -3,7 +3,7 @@
 // only; the heavy lifting lives in the focused modules it imports.
 
 import { LOCATIONS, TYPES, CENTERS, LIGHT_LABELS } from './catalog.js';
-import { initMap, updateMap, flyToListing, fitToRadius, setSelectedMarker, clearSelectedMarker } from './map.js';
+import { initMap, updateMap, flyToListing, fitToRadius, setSelectedMarker, clearSelectedMarker, setSatellite, isSatellite } from './map.js';
 import { drawPlanThumb, drawIsoHero } from './thumbs.js';
 import { openTour } from './tour.js';
 import { parseQuery } from './nlp.js';
@@ -146,15 +146,22 @@ function runSearch() {
 // unless we've already fetched for this exact view. Fire-and-forget from
 // render() — re-renders once results land rather than blocking the current
 // render on a network call.
+let dynamicFetchInFlight = false;
+
 async function refreshDynamicFeatureIfNeeded() {
-  if (!state.dynamicFeature) { dynamicLocations = []; dynamicSearchKey = ''; return; }
+  if (!state.dynamicFeature) { dynamicLocations = []; dynamicSearchKey = ''; dynamicFetchInFlight = false; return; }
 
   const key = JSON.stringify(state.dynamicFeature) +
     `|${state.center.lat.toFixed(3)},${state.center.lng.toFixed(3)},${state.radiusMi}`;
   if (key === dynamicSearchKey) return; // already fetched for this view
   dynamicSearchKey = key;
 
+  // Setting this (and dynamicSearchKey above) runs synchronously before the
+  // await below yields, so the render() call that triggered this — still
+  // unwinding its own call stack — already sees dynamicFetchInFlight=true.
+  dynamicFetchInFlight = true;
   const found = await findNaturalFeatures(state.center, state.radiusMi, state.dynamicFeature);
+  dynamicFetchInFlight = false;
   // Guard against a stale response landing after the user changed the query
   // or moved again — only apply if we're still looking at the same view.
   if (dynamicSearchKey === key) {
@@ -174,8 +181,9 @@ function typeInfo(loc) {
 function render() {
   refreshDynamicFeatureIfNeeded(); // fire-and-forget; re-renders itself once data lands
   const results = runSearch();
-  document.getElementById('results-meta').innerHTML =
-    `<b>${results.length}</b> of ${LOCATIONS.length + dynamicLocations.length} locations within ${state.radiusMi} mi of ${escapeHtml(state.centerName)}`;
+  document.getElementById('results-meta').innerHTML = dynamicFetchInFlight
+    ? `Searching OpenStreetMap for “${escapeHtml(state.dynamicFeature.label)}” nearby…`
+    : `<b>${results.length}</b> of ${LOCATIONS.length + dynamicLocations.length} locations within ${state.radiusMi} mi of ${escapeHtml(state.centerName)}`;
 
   const list = document.getElementById('results');
   list.innerHTML = '';
@@ -283,22 +291,36 @@ async function getAIResponse(text) {
   }
 }
 
-async function runAISearch(text) {
-  const q = await parseQuery(text);
-  applyParsedToState(q);
-  renderInterpreted(q);
+// Visible feedback while the AI-parse/geocode round-trip is in flight — with
+// no indicator at all, a slow network call reads as the app being stuck
+// rather than working.
+function setSearching(on) {
+  const btn = document.getElementById('ai-go');
+  btn.disabled = on;
+  btn.textContent = on ? 'Reading…' : 'Search ✨';
+}
 
-  // If a location is specified, geocode and move the map center
-  if (q.locationText) {
-    setGeoStatus(`Locating “${q.locationText}”…`);
-    const hit = await geocode(q.locationText);
-    if (hit) moveCenter(hit.lat, hit.lng, hit.label);
-    else setGeoStatus(`Couldn't find “${q.locationText}” — showing ${state.centerName}.`, true);
+async function runAISearch(text) {
+  setSearching(true);
+  try {
+    const q = await parseQuery(text);
+    applyParsedToState(q);
+    renderInterpreted(q);
+
+    // If a location is specified, geocode and move the map center
+    if (q.locationText) {
+      setGeoStatus(`Locating “${q.locationText}”…`);
+      const hit = await geocode(q.locationText);
+      if (hit) moveCenter(hit.lat, hit.lng, hit.label);
+      else setGeoStatus(`Couldn't find “${q.locationText}” — showing ${state.centerName}.`, true);
+    }
+    render();
+    if (state.view === '3d') flyHome3D(state.center);
+    // After rendering results, optionally fetch a detailed AI response via GROQ
+    await getAIResponse(text);
+  } finally {
+    setSearching(false);
   }
-  render();
-  if (state.view === '3d') flyHome3D(state.center);
-  // After rendering results, optionally fetch a detailed AI response via GROQ
-  await getAIResponse(text);
 }
 
 // --------------------------------------------------------------- geocoding
@@ -921,6 +943,11 @@ async function init() {
   };
 
   document.querySelectorAll('#map-toggle button').forEach(b => { b.onclick = () => setView(b.dataset.view); });
+
+  document.getElementById('basemap-toggle').onclick = (e) => {
+    const on = setSatellite(!isSatellite());
+    e.target.classList.toggle('active', on);
+  };
 
   document.getElementById('settings-btn').onclick = openSettings;
   document.getElementById('settings-save').onclick = saveSettings;

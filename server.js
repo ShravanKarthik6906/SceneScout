@@ -231,6 +231,9 @@ async function overpassJsonWithRetry(query, retries = OVERPASS_ENDPOINTS.length 
     const endpoint = OVERPASS_ENDPOINTS[attempt % OVERPASS_ENDPOINTS.length];
     let resp;
     try {
+      // These are shared free mirrors — an overloaded one can hang far
+      // longer than it takes to just fail over to the next, so cap each
+      // attempt instead of letting one slow server stall the whole search.
       resp = await fetch(endpoint, {
         method: 'POST',
         headers: {
@@ -239,10 +242,11 @@ async function overpassJsonWithRetry(query, retries = OVERPASS_ENDPOINTS.length 
           'User-Agent': USER_AGENT,
         },
         body: `data=${encodeURIComponent(query)}`,
+        signal: AbortSignal.timeout(10000),
       });
     } catch (e) {
-      // network-level failure (DNS, connection refused, ...) — treat like a
-      // retryable HTTP error and fail over to the next mirror.
+      // network-level failure (DNS, connection refused, timeout, ...) —
+      // treat like a retryable HTTP error and fail over to the next mirror.
       if (attempt >= retries) throw e;
       continue;
     }

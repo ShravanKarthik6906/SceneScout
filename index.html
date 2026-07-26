@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SceneScout — Location Scouting for Photo &amp; Film</title>
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="vendor/maplibre-gl/maplibre-gl.css">
   <link rel="stylesheet" href="css/style.css">
   <script type="importmap">
     { "imports": { "three": "/vendor/three/three.module.js" } }
@@ -109,6 +110,9 @@
         <button data-view="2d" class="active">🗺 2D</button>
         <button data-view="3d">🌎 3D</button>
       </div>
+      <!-- swaps the 2D basemap between the cinematic dark tiles and real
+           satellite imagery — see setSatellite() in js/map.js. -->
+      <button id="basemap-toggle" title="Toggle satellite imagery">🛰 SATELLITE</button>
       <!-- shutter-style iris wipe on search submit — see .play in
            css/style.css and playIrisTransition() in js/app.js. -->
       <div id="iris-transition"></div>
@@ -188,6 +192,7 @@
   </div>
 
   <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="vendor/maplibre-gl/maplibre-gl.js"></script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>
