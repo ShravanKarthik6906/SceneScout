@@ -223,15 +223,21 @@ function hashQuery(q) {
 // directly so we control the headers.
 //
 // overpass-api.de alone is a single shared free instance that times out
-// (504) under its own load. These are all independent, free, community-run
-// mirrors of the same full planet dataset over the same query language —
-// same list overpass-ts itself ships (dist/endpoints.js) — so racing across
-// them means one overloaded mirror can't stall the whole search.
+// (504) under its own load. These are independent, free, community-run
+// mirrors of the same full-planet dataset over the same query language, so
+// racing across them means one overloaded mirror can't stall the whole
+// search. overpass.openstreetmap.fr is deliberately NOT in this list even
+// though overpass-ts's own endpoint list includes it: it serves a
+// France-only regional extract, not the full planet. Racing it against a
+// full-planet query for anywhere outside France doesn't error — it just
+// returns a valid, successful, silently-empty result, which Promise.any
+// happily accepts as "the" answer, discarding whatever the real mirrors
+// would have found. Confirmed live: a Los Angeles "natural=water" query
+// came back with "elements": [] despite LA obviously having real lakes.
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
   'https://overpass.osm.ch/api/interpreter',
-  'https://overpass.openstreetmap.fr/api/interpreter',
 ];
 
 // 400 (bad query) and 406 fail identically on every mirror — if every mirror
