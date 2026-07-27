@@ -358,12 +358,20 @@ app.get('/api/location-photos', async (req, res) => {
   const q = req.query.q;
   if (!q) return res.status(400).json({ error: 'Missing q parameter' });
   const trimmed = q.trim();
-  const key = 'photos:' + hashQuery(trimmed);
+  // Real natural features (lakes, mountains, ...) skip the Openverse
+  // fallback: Openverse is a broad, noisy CC-media aggregator (stock
+  // photos, museum/library scans) that's only a reasonable fallback for
+  // the fictional catalog, where Commons has zero chance of a real match
+  // anyway. For a real place, a generic/unnamed query with no Commons hit
+  // has surfaced things like a random digitized library book cover —
+  // worse than just showing no photos.
+  const natural = req.query.natural === '1';
+  const key = 'photos:' + (natural ? 'nat:' : '') + hashQuery(trimmed);
   if (photoCache[key]) return res.json(photoCache[key]);
 
   try {
     let results = await searchCommonsPhotos(trimmed);
-    if (!results.length) results = await searchOpenversePhotos(trimmed);
+    if (!results.length && !natural) results = await searchOpenversePhotos(trimmed);
     photoCache[key] = results;
     res.json(results);
   } catch (e) {

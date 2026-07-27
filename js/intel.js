@@ -125,12 +125,15 @@ export async function geocode(query) {
 
 // ------------------------------------------------------------ location photos
 // Real photos of a location via Wikimedia Commons (falling back to
-// Openverse), proxied through our own server — see /api/location-photos.
-export async function fetchLocationPhotos(query) {
+// Openverse for the fictional catalog only), proxied through our own
+// server — see /api/location-photos. natural: true for real natural
+// features, so the server skips the Openverse fallback (see server.js).
+export async function fetchLocationPhotos(query, natural = false) {
   try {
     // Server tries Commons then falls back to Openverse sequentially (up to
     // 8s each) — this must stay above that combined worst case.
-    const res = await fetch(`/api/location-photos?q=${encodeURIComponent(query)}`, { signal: AbortSignal.timeout(20000) });
+    const url = `/api/location-photos?q=${encodeURIComponent(query)}${natural ? '&natural=1' : ''}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
     if (!res.ok) return [];
     return await res.json();
   } catch {

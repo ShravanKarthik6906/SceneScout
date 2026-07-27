@@ -513,7 +513,10 @@ async function renderPhotos(loc) {
 
   // Query by name + neighborhood/city for better hit rate than the bare name alone.
   const query = `${loc.name} ${loc.neighborhood || ''}`.trim();
-  const photos = await fetchLocationPhotos(query);
+  // Dynamic natural-feature locations carry a slug type that isn't one of
+  // catalog.js's TYPES keys — see typeInfo()'s fallback for the same check.
+  const natural = !TYPES[loc.type];
+  const photos = await fetchLocationPhotos(query, natural);
 
   // Guard against a stale response landing after the user closed/switched
   // to a different location's detail view.
@@ -799,7 +802,8 @@ async function handleGlobeClick(lat, lng) {
 
   const place = await reverseGeocode(lat, lng);
   const label = place?.label || `${lat.toFixed(3)}, ${lng.toFixed(3)}`;
-  const photos = await fetchLocationPhotos(label);
+  // Explore-the-globe is always a real place, same reasoning as renderPhotos.
+  const photos = await fetchLocationPhotos(label, true);
 
   panel.innerHTML = `
     <div class="discover-head">
