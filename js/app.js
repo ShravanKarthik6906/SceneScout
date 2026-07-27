@@ -125,10 +125,19 @@ function runSearch() {
   // included whenever one is active — independent of the building-type chips,
   // since "lake" or "mountain" isn't a concept those chips represent.
   const candidates = state.dynamicFeature ? [...LOCATIONS, ...dynamicLocations] : LOCATIONS;
+  const wantedTypes = new Set([...state.types, ...(state.query ? state.query.types : [])]);
 
   for (const loc of candidates) {
     const distMi = haversineMi(state.center.lat, state.center.lng, loc.lat, loc.lng);
     if (distMi > state.radiusMi) continue;
+    // Type/size/budget are hard filters — a location that doesn't clear them
+    // isn't shown at all, not just ranked lower. (Light stays a soft
+    // ranking signal in score.js; it's more a preference than a pass/fail.)
+    // A dynamic feature (lake, mountain, ...) has no building type to match
+    // against, so a type filter doesn't apply to it — only to the catalog.
+    if (wantedTypes.size && TYPES[loc.type] && !wantedTypes.has(loc.type)) continue;
+    if (state.minSqft && loc.sqft < state.minSqft) continue;
+    if (isFinite(state.maxRate) && loc.rate > state.maxRate) continue;
     const suit = safeSuitability(loc, state, state.query);
     results.push({ ...loc, distMi, score: suit.overall, suit });
   }
