@@ -182,6 +182,10 @@ export async function parseQuery(raw) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query: trimmed }),
+      // The server already bounds its own Groq call to 15s; this is
+      // defense in depth so a hung connection to our own server can't
+      // leave the search button stuck on "Reading…" forever.
+      signal: AbortSignal.timeout(20000),
     });
     if (!res.ok) throw new Error(`parse-query failed: ${res.status}`);
     const data = await res.json();

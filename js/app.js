@@ -682,7 +682,8 @@ async function findNearestMapillaryImage(lat, lng) {
   if (!MAPILLARY_TOKEN || MAPILLARY_TOKEN === 'YOUR_MAPILLARY_CLIENT_TOKEN') return null;
   const res = await fetch(
     `https://graph.mapillary.com/images?access_token=${MAPILLARY_TOKEN}` +
-    `&fields=id&closeto=${lng},${lat}&radius=100`
+    `&fields=id&closeto=${lng},${lat}&radius=100`,
+    { signal: AbortSignal.timeout(10000) }
   );
   if (!res.ok) throw new Error(`Mapillary API error: ${res.status}`);
   const data = await res.json();

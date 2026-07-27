@@ -109,7 +109,7 @@ export function compass(deg) {
 export async function geocode(query) {
   const url = `/api/geocode?q=${encodeURIComponent(query)}`;
   try {
-    const res = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+    const res = await fetch(url, { headers: { 'Accept-Language': 'en' }, signal: AbortSignal.timeout(10000) });
     if (!res.ok) return null;
     const data = await res.json();
     if (!data.length) return null;
@@ -128,7 +128,7 @@ export async function geocode(query) {
 // Openverse), proxied through our own server — see /api/location-photos.
 export async function fetchLocationPhotos(query) {
   try {
-    const res = await fetch(`/api/location-photos?q=${encodeURIComponent(query)}`);
+    const res = await fetch(`/api/location-photos?q=${encodeURIComponent(query)}`, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) return [];
     return await res.json();
   } catch {
@@ -144,7 +144,7 @@ export async function fetchPlaceInfo({ lat, lng, name, wikipedia }) {
   if (name) params.set('name', name);
   if (wikipedia) params.set('wikipedia', wikipedia);
   try {
-    const res = await fetch(`/api/place-info?${params}`);
+    const res = await fetch(`/api/place-info?${params}`, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) return null;
     const data = await res.json();
     return data.found === false ? null : data;
@@ -158,7 +158,7 @@ export async function fetchPlaceInfo({ lat, lng, name, wikipedia }) {
 // name via our /api/reverse-geocode proxy (LocationIQ).
 export async function reverseGeocode(lat, lng) {
   try {
-    const res = await fetch(`/api/reverse-geocode?lat=${lat}&lng=${lng}`);
+    const res = await fetch(`/api/reverse-geocode?lat=${lat}&lng=${lng}`, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) return null;
     const data = await res.json();
     if (!data) return null;
@@ -190,7 +190,7 @@ export async function forecast(lat, lng) {
     + '&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max'
     + '&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto&forecast_days=3';
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) return null;
     return await res.json();
   } catch {

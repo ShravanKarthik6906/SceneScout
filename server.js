@@ -71,7 +71,7 @@ app.get('/api/geocode', async (req, res) => {
 
   try {
     const data = await enqueue(async () => {
-      const response = await fetch(url);
+      const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
       if (!response.ok) {
         // LocationIQ returns 404 for "no match found" — treat that as an
         // empty result, not an error, so the frontend can handle it gracefully.
@@ -162,6 +162,10 @@ app.post('/api/parse-query', async (req, res) => {
         response_format: { type: 'json_object' },
         temperature: 0.1,
       }),
+      // Without this, a hung connection to Groq left the client's "Reading…"
+      // state stuck forever — nothing ever rejected, so the frontend's own
+      // try/finally never ran.
+      signal: AbortSignal.timeout(15000),
     });
 
     if (!response.ok) {
@@ -284,7 +288,7 @@ async function searchCommonsPhotos(query) {
     gsrnamespace: '6', gsrsearch: query, gsrlimit: '12',
     prop: 'imageinfo', iiprop: 'url|size', iiurlwidth: '480',
   });
-  const res = await fetch(url, { headers: { 'User-Agent': USER_AGENT } });
+  const res = await fetch(url, { headers: { 'User-Agent': USER_AGENT }, signal: AbortSignal.timeout(8000) });
   if (!res.ok) return [];
   const data = await res.json();
   const pages = Object.values(data.query?.pages || {});
@@ -308,7 +312,7 @@ async function searchOpenversePhotos(query) {
   const url = 'https://api.openverse.org/v1/images/?' + new URLSearchParams({
     q: query, page_size: '12', license_type: 'commercial,modification',
   });
-  const res = await fetch(url, { headers: { 'User-Agent': USER_AGENT } });
+  const res = await fetch(url, { headers: { 'User-Agent': USER_AGENT }, signal: AbortSignal.timeout(8000) });
   if (!res.ok) return [];
   const data = await res.json();
   return (data.results || [])
@@ -352,6 +356,7 @@ let placeInfoCache = {}; // in-memory only (see note above)
 async function fetchWikiSummary(lang, title) {
   const res = await fetch(`https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`, {
     headers: { 'User-Agent': USER_AGENT, 'Accept': 'application/json' },
+    signal: AbortSignal.timeout(8000),
   });
   if (!res.ok) return null;
   const data = await res.json();
@@ -371,7 +376,7 @@ async function geosearchWikiTitle(lat, lng, name) {
   const res = await fetch(
     `https://en.wikipedia.org/w/api.php?action=query&list=geosearch&format=json` +
     `&gscoord=${lat}|${lng}&gsradius=8000&gslimit=5`,
-    { headers: { 'User-Agent': USER_AGENT } }
+    { headers: { 'User-Agent': USER_AGENT }, signal: AbortSignal.timeout(8000) }
   );
   if (!res.ok) return null;
   const data = await res.json();
@@ -424,7 +429,7 @@ app.get('/api/reverse-geocode', async (req, res) => {
   const url = `https://us1.locationiq.com/v1/reverse?key=${LOCATIONIQ_KEY}&lat=${lat}&lon=${lng}&format=json`;
   try {
     const data = await enqueue(async () => {
-      const response = await fetch(url);
+      const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
       if (!response.ok) {
         if (response.status === 404) return null;
         const err = new Error('LocationIQ reverse error');
