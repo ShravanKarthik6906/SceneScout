@@ -38,19 +38,14 @@ function buildOverpassQuery(center, radiusM, tags, elementTypes) {
     return `[out:json][timeout:25];\n(\n${clauses}\n);\nout body geom;`;
 }
 
-// feature: { label, icon, osmTags: [{key,value}], elementTypes: string[], approxSizeFt: number|null }
-// center: {lat,lng}. radiusMi: search radius.
-export async function findNaturalFeatures(center, radiusMi, feature) {
-    if (!feature || !Array.isArray(feature.osmTags) || !feature.osmTags.length) return [];
-
-    const radiusM = Math.round(radiusMi * MI_TO_M);
-    const query = buildOverpassQuery(center, radiusM, feature.osmTags, feature.elementTypes);
-
-    // A transient client-side network blip (Chrome's ERR_NETWORK_CHANGED,
-    // Wi-Fi handoff, etc.) surfaces as fetch() itself rejecting — a plain
-    // TypeError, not an HTTP error response — and is usually gone a moment
-    // later, unlike a real HTTP error (which the server already retries
-    // across Overpass mirrors on its own). Worth one quick client retry.
+// A transient client-side network blip (Chrome's ERR_NETWORK_CHANGED, Wi-Fi
+// handoff, etc.) surfaces as fetch() itself rejecting — a plain TypeError,
+// not an HTTP error response — and is usually gone a moment later, unlike a
+// real HTTP error (which the server already retries across Overpass mirrors
+// on its own). Worth one quick client retry. Returns [] (not throwing) on
+// any unrecoverable failure so a bad natural-feature search never breaks
+// the rest of the results.
+async function queryOverpass(query) {
     async function postOverpass() {
         const res = await fetch('/api/overpass', {
             method: 'POST',
@@ -83,8 +78,30 @@ export async function findNaturalFeatures(center, radiusMi, feature) {
             return [];
         }
     }
+    return Array.isArray(data.elements) ? data.elements : [];
+}
 
-    const elements = Array.isArray(data.elements) ? data.elements : [];
+// feature: { label, icon, osmTags: [{key,value}], elementTypes: string[], approxSizeFt: number|null }
+// center: {lat,lng}. radiusMi: search radius.
+export async function findNaturalFeatures(center, radiusMi, feature) {
+    if (!feature || !Array.isArray(feature.osmTags) || !feature.osmTags.length) return [];
+
+    const radiusM = Math.round(radiusMi * MI_TO_M);
+    const query = buildOverpassQuery(center, radiusM, feature.osmTags, feature.elementTypes);
+    let elements = await queryOverpass(query);
+
+    // Groq sometimes adds an extra qualifying sub-tag beyond the primary
+    // one (e.g. natural=water + water=lake) — real-world OSM data is
+    // inconsistent about carrying that second tag, so requiring both (every
+    // osmTags entry is AND'd together) can quietly return zero real matches
+    // even when the area clearly has the feature. Relax to just the primary
+    // tag and try once more before giving up.
+    if (!elements.length && feature.osmTags.length > 1) {
+        console.warn('[naturalFeatures] no matches with full tag set, retrying with primary tag only:', feature.osmTags);
+        const relaxedQuery = buildOverpassQuery(center, radiusM, [feature.osmTags[0]], feature.elementTypes);
+        elements = await queryOverpass(relaxedQuery);
+    }
+
     const results = [];
     const toleranceFt = 200;
 

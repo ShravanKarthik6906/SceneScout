@@ -122,6 +122,14 @@ Output ONLY a JSON object, no prose, matching exactly this shape:
       //   island      -> [{"key":"place","value":"island"}]
       // If you are not confident of a real OSM tag for the feature, still make your
       // best guess using natural=* or landuse=* conventions rather than returning null here.
+      // IMPORTANT: every entry in this array is AND'd together in the query — an
+      // element must match ALL of them. Real-world OSM data is inconsistent about
+      // secondary/subtype tags (e.g. many real lakes carry only natural=water with
+      // no water=lake sub-tag), so adding one drastically undercounts real matches.
+      // Give ONLY the single tag that primarily identifies the feature (as in the
+      // examples above) unless a second tag is truly required to distinguish it
+      // from something else entirely (e.g. distinguishing a reservoir from a
+      // natural lake when the brief is specific about which one it wants).
     "elementTypes": string[], // which OSM element types typically carry this tag: subset of
                                // ["node","way","relation"]. Point features (peaks, waterfalls,
                                // cave entrances) are usually "node". Areas (lakes, forests, parks)
