@@ -231,7 +231,13 @@ function render() {
 // --------------------------------------------------------------- AI search
 function applyParsedToState(q) {
   state.query = q;
-  if (q.types.size) state.types = new Set(q.types);
+  // Every field here is fully replaced by the current parse (defaulting to
+  // "not specified" when absent) except this one used to be an exception —
+  // it only overwrote state.types when the new query mentioned a building
+  // type, silently leaving a stale type filter from an earlier search (or
+  // an earlier manual chip click) active for a query that has nothing to
+  // do with it, e.g. a pure natural-feature search like "300 m lake".
+  state.types = new Set(q.types);
   state.light = q.light || 'any';
   state.minSqft = q.minSqft || 0;
   state.maxRate = q.maxRate ?? Infinity;
