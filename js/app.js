@@ -187,37 +187,45 @@ function render() {
 
   const list = document.getElementById('results');
   list.innerHTML = '';
-  if (!results.length) {
-    list.innerHTML = `<div class="empty">No locations in this radius.<br>Widen the radius, search another city above, or click the map to move the center.</div>`;
-  }
-  for (const loc of results) {
-    const t = typeInfo(loc);
-    const card = document.createElement('article');
-    card.className = 'card';
-    card.innerHTML = `
-      <canvas width="300" height="150"></canvas>
-      <div class="card-body">
-        <div class="card-top">
-          <h3>${escapeHtml(loc.name)}</h3>
-          <span class="match" style="--pct:${loc.score}">${loc.score}%</span>
-        </div>
-        <div class="card-sub">${t.icon} ${t.label} · ${escapeHtml(loc.neighborhood)}</div>
-        <div class="card-stats">
-          <span>${loc.sqft.toLocaleString()} ft²</span>
-          <span>${loc.ceilingFt ? loc.ceilingFt + ' ft ceil' : 'open air'}</span>
-          <span>$${loc.rate}/hr</span>
-          <span>${loc.distMi.toFixed(1)} mi</span>
-        </div>
-      </div>`;
-    // thumbs.js was written for curated floor-plan locations; guard so a
-    // dynamic feature (no floor plan) can't crash the whole results render.
-    try {
-      drawPlanThumb(loc, card.querySelector('canvas'));
-    } catch (e) {
-      console.warn('[thumbs] drawPlanThumb failed for', loc.id, e.message);
+  if (dynamicFetchInFlight) {
+    list.innerHTML = `<div class="loading-state">
+      <div class="spinner"></div>
+      Searching OpenStreetMap for “${escapeHtml(state.dynamicFeature.label)}” nearby…
+    </div>`;
+  } else if (!results.length) {
+    list.innerHTML = state.dynamicFeature
+      ? `<div class="empty">No ${escapeHtml(state.dynamicFeature.label.toLowerCase())} found within ${state.radiusMi} mi.<br>Widen the radius, search another city above, or try a different feature.</div>`
+      : `<div class="empty">No locations in this radius.<br>Widen the radius, search another city above, or click the map to move the center.</div>`;
+  } else {
+    for (const loc of results) {
+      const t = typeInfo(loc);
+      const card = document.createElement('article');
+      card.className = 'card';
+      card.innerHTML = `
+        <canvas width="300" height="150"></canvas>
+        <div class="card-body">
+          <div class="card-top">
+            <h3>${escapeHtml(loc.name)}</h3>
+            <span class="match" style="--pct:${loc.score}">${loc.score}%</span>
+          </div>
+          <div class="card-sub">${t.icon} ${t.label} · ${escapeHtml(loc.neighborhood)}</div>
+          <div class="card-stats">
+            <span>${loc.sqft.toLocaleString()} ft²</span>
+            <span>${loc.ceilingFt ? loc.ceilingFt + ' ft ceil' : 'open air'}</span>
+            <span>$${loc.rate}/hr</span>
+            <span>${loc.distMi.toFixed(1)} mi</span>
+          </div>
+        </div>`;
+      // thumbs.js was written for curated floor-plan locations; guard so a
+      // dynamic feature (no floor plan) can't crash the whole results render.
+      try {
+        drawPlanThumb(loc, card.querySelector('canvas'));
+      } catch (e) {
+        console.warn('[thumbs] drawPlanThumb failed for', loc.id, e.message);
+      }
+      card.onclick = () => openDetail(loc);
+      list.appendChild(card);
     }
-    card.onclick = () => openDetail(loc);
-    list.appendChild(card);
   }
 
   updateMap(state, results, [...LOCATIONS, ...dynamicLocations]);

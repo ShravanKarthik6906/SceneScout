@@ -135,8 +135,11 @@ Output ONLY a JSON object, no prose, matching exactly this shape:
                                // cave entrances) are usually "node". Areas (lakes, forests, parks)
                                // are usually "way" and "relation". Linear features (rivers) are
                                // usually "way". Include all types that could plausibly apply.
-    "approxSizeFt": number | null // a target size in feet (diameter/width/length) if the brief
-                                   // gives one (e.g. "300 ft across"), else null — do not invent one
+    "approxSizeFt": number | null // a target size in FEET (diameter/width/length) if the brief
+                                   // gives one, else null — do not invent one. The brief may give
+                                   // the size in feet ("300 ft across", "300 feet") or metric
+                                   // ("300 m", "300 meters", "300m lake") — convert meters to feet
+                                   // (multiply by 3.28084) before returning; this field is always feet.
   }
 }
 Only include a "types" entry if it's clearly implied. Do not invent details not present in the brief.

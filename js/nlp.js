@@ -62,6 +62,20 @@ function matchAny(text, phrases) {
   return null;
 }
 
+const M_TO_FT = 3.28084;
+
+// Pulls a size like "300 ft", "300ft", "300 feet", "300 m", "300 meters"
+// out of a natural-feature query, converting meters to feet since that's
+// what NaturalFeatures.js's toleranceFt comparison expects. Returns null if
+// no size is mentioned — do not invent one.
+function parseApproxSizeFt(text) {
+  const m = text.match(/(\d{2,6})\s?(ft|feet|foot|m|meters?|metres?)\b/);
+  if (!m) return null;
+  const amt = +m[1];
+  const isMetric = /^m(eters?|etres?)?$/.test(m[2]);
+  return isMetric ? Math.round(amt * M_TO_FT) : amt;
+}
+
 // The original rules-based parser — kept as a synchronous fallback for when
 // Groq is unavailable (no key set, network error, rate limit, bad JSON, etc).
 function parseQueryLocal(raw) {
@@ -94,7 +108,12 @@ function parseQueryLocal(raw) {
   // compound queries like "lake house" since types isn't cleared here)
   if (!out.types.size) {
     for (const entry of NATURAL_FEATURE_LEXICON) {
-      if (matchAny(text, entry.words.map(w => ' ' + w))) { out.naturalFeature = entry.feature; break; }
+      if (matchAny(text, entry.words.map(w => ' ' + w))) {
+        // Clone — entry.feature is a shared constant, and approxSizeFt below
+        // is per-query, so mutating it directly would leak across searches.
+        out.naturalFeature = { ...entry.feature, approxSizeFt: parseApproxSizeFt(text) };
+        break;
+      }
     }
   }
 
@@ -158,7 +177,10 @@ function parseQueryLocal(raw) {
 function buildInterpretedChips(out) {
   const chips = [];
   for (const t of out.types) if (TYPES[t]) chips.push(`${TYPES[t].icon} ${TYPES[t].label}`);
-  if (out.naturalFeature) chips.push(`${out.naturalFeature.icon || '📍'} ${out.naturalFeature.label}`);
+  if (out.naturalFeature) {
+    chips.push(`${out.naturalFeature.icon || '📍'} ${out.naturalFeature.label}`);
+    if (out.naturalFeature.approxSizeFt) chips.push(`📏 ~${out.naturalFeature.approxSizeFt.toLocaleString()} ft across`);
+  }
   if (out.light) chips.push(`💡 ${out.light} light`);
   if (out.minSqft) chips.push(`📐 ${out.minSqft.toLocaleString()}+ ft²`);
   if (out.maxRate) chips.push(`💵 ≤ $${out.maxRate}/hr`);
