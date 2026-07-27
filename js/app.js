@@ -265,32 +265,6 @@ function renderInterpreted(q) {
   box.innerHTML = `<div class="ai-interpreted-head">AI read your brief as</div><div class="ai-chips">${chips}</div>`;
 }
 
-async function getAIResponse(text) {
-  const groqKey = localStorage.getItem('groq-api-key');
-  if (!groqKey) return;
-  try {
-    const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${groqKey}`,
-      },
-      body: JSON.stringify({
-        model: 'llama3-8b-8192',
-        messages: [{ role: 'user', content: text }],
-        temperature: 0.7,
-        max_tokens: 500,
-      }),
-    });
-    const data = await resp.json();
-    const msg = data?.choices?.[0]?.message?.content || '';
-    const outDiv = document.getElementById('ai-response');
-    if (outDiv) outDiv.textContent = msg;
-  } catch (e) {
-    console.error('GROQ request failed', e);
-  }
-}
-
 // Visible feedback while the AI-parse/geocode round-trip is in flight — with
 // no indicator at all, a slow network call reads as the app being stuck
 // rather than working.
@@ -316,8 +290,6 @@ async function runAISearch(text) {
     }
     render();
     if (state.view === '3d') flyHome3D(state.center);
-    // After rendering results, optionally fetch a detailed AI response via GROQ
-    await getAIResponse(text);
   } finally {
     setSearching(false);
   }
@@ -730,13 +702,10 @@ function closeDetail() {
 function openSettings() {
   document.getElementById('settings').classList.remove('hidden');
   document.getElementById('api-key-input').value = localStorage.getItem(KEY_STORAGE) || '';
-  document.getElementById('groq-key-input').value = localStorage.getItem('groq-api-key') || '';
 }
 function saveSettings() {
   const v = document.getElementById('api-key-input').value.trim();
   if (v) localStorage.setItem(KEY_STORAGE, v); else localStorage.removeItem(KEY_STORAGE);
-  const groqV = document.getElementById('groq-key-input').value.trim();
-  if (groqV) localStorage.setItem('groq-api-key', groqV); else localStorage.removeItem('groq-api-key');
   document.getElementById('settings').classList.add('hidden');
 }
 
