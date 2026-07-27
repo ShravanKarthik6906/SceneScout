@@ -51,10 +51,13 @@ async function queryOverpass(query) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query }),
-            // The server itself bounds its Overpass mirror race to ~9s; this is
-            // a defense-in-depth cap so a hung connection to our own server
-            // (Render hiccup, etc.) can't leave the search waiting forever.
-            signal: AbortSignal.timeout(15000),
+            // The server itself bounds its Overpass mirror race to 25s; this
+            // must stay above that or the client would abort the connection
+            // before the server even finishes, which defeats the point of
+            // the server-side timeout entirely. This is purely a defense-in-
+            // depth cap for a hung connection to our own server (Render
+            // hiccup, etc.), not meant to race the server's own timeout.
+            signal: AbortSignal.timeout(30000),
         });
         if (!res.ok) throw new Error(`overpass proxy failed: ${res.status}`);
         return res.json();

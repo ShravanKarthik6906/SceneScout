@@ -128,7 +128,9 @@ export async function geocode(query) {
 // Openverse), proxied through our own server — see /api/location-photos.
 export async function fetchLocationPhotos(query) {
   try {
-    const res = await fetch(`/api/location-photos?q=${encodeURIComponent(query)}`, { signal: AbortSignal.timeout(10000) });
+    // Server tries Commons then falls back to Openverse sequentially (up to
+    // 8s each) — this must stay above that combined worst case.
+    const res = await fetch(`/api/location-photos?q=${encodeURIComponent(query)}`, { signal: AbortSignal.timeout(20000) });
     if (!res.ok) return [];
     return await res.json();
   } catch {
@@ -144,7 +146,9 @@ export async function fetchPlaceInfo({ lat, lng, name, wikipedia }) {
   if (name) params.set('name', name);
   if (wikipedia) params.set('wikipedia', wikipedia);
   try {
-    const res = await fetch(`/api/place-info?${params}`, { signal: AbortSignal.timeout(10000) });
+    // Server does a geosearch then a summary fetch sequentially (up to 8s
+    // each) — this must stay above that combined worst case.
+    const res = await fetch(`/api/place-info?${params}`, { signal: AbortSignal.timeout(20000) });
     if (!res.ok) return null;
     const data = await res.json();
     return data.found === false ? null : data;

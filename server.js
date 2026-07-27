@@ -272,12 +272,22 @@ async function fetchOverpassMirror(endpoint, query, timeoutMs) {
 
 // Races every mirror in parallel instead of trying them one at a time with
 // pauses in between — a sequential retry's worst case was the *sum* of all
-// four mirrors' timeouts (tens of seconds), which is exactly what made
+// mirrors' timeouts (tens of seconds), which is exactly what made
 // natural-feature searches feel broken. Racing bounds the worst case to a
 // single timeoutMs, whichever mirror answers first wins, and Overpass's
 // "one request at a time" fair-use limit is per-mirror — one request each
-// to four independent mirrors doesn't violate it.
-async function overpassJsonWithRetry(query, timeoutMs = 9000) {
+// to independent mirrors doesn't violate it.
+//
+// timeoutMs was originally 9s, tuned back when 4 mirrors were racing and
+// only needed one fast responder. Down to 2 confirmed-real mirrors now
+// (see OVERPASS_ENDPOINTS' history — two others were dropped for silently
+// returning empty results, not for being slow), 9s was too tight and
+// caused a live, confirmed timeout on a legitimate query against
+// overpass.kumi.systems — the exact mirror a manual test showed returns
+// real, correct data given a bit more time. 25s matches the query's own
+// [timeout:25] directive, so we're not cutting it off earlier than
+// Overpass itself would.
+async function overpassJsonWithRetry(query, timeoutMs = 25000) {
   const attempts = OVERPASS_ENDPOINTS.map(endpoint => fetchOverpassMirror(endpoint, query, timeoutMs));
   try {
     return await Promise.any(attempts);
