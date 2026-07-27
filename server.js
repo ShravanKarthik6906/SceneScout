@@ -191,15 +191,11 @@ app.post('/api/parse-query', async (req, res) => {
 
 // ------------------------------------------------------------- Overpass (lakes)
 let overpassCache = {}; // query hash -> parsed result, in-memory only (see note above)
-
-// Separate queue from the LocationIQ one — Overpass's public instance asks
-// for one request at a time, not a fixed req/sec, so we serialize fully.
-let overpassQueue = Promise.resolve();
-function enqueueOverpass(fn) {
-  const result = overpassQueue.then(fn);
-  overpassQueue = result.catch(() => { });
-  return result;
-}
+// Two truly concurrent requests for the same query (e.g. a double-click)
+// arrive before either has populated the cache — without this, both would
+// independently race all four mirrors. Sharing the in-flight promise
+// dedupes that without serializing requests for *different* queries.
+const overpassInFlight = new Map(); // query hash -> Promise
 
 // Simple hash so we don't store the full query text as a JSON key.
 function hashQuery(q) {
@@ -217,8 +213,8 @@ function hashQuery(q) {
 // overpass-api.de alone is a single shared free instance that times out
 // (504) under its own load. These are all independent, free, community-run
 // mirrors of the same full planet dataset over the same query language —
-// same list overpass-ts itself ships (dist/endpoints.js) — so failing over
-// across them spreads load instead of hammering one server on every retry.
+// same list overpass-ts itself ships (dist/endpoints.js) — so racing across
+// them means one overloaded mirror can't stall the whole search.
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
@@ -226,42 +222,51 @@ const OVERPASS_ENDPOINTS = [
   'https://overpass.openstreetmap.fr/api/interpreter',
 ];
 
-async function overpassJsonWithRetry(query, retries = OVERPASS_ENDPOINTS.length - 1, pauseMs = 1500) {
-  for (let attempt = 0; ; attempt++) {
-    const endpoint = OVERPASS_ENDPOINTS[attempt % OVERPASS_ENDPOINTS.length];
-    let resp;
-    try {
-      // These are shared free mirrors — an overloaded one can hang far
-      // longer than it takes to just fail over to the next, so cap each
-      // attempt instead of letting one slow server stall the whole search.
-      resp = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Accept': 'application/json',
-          'User-Agent': USER_AGENT,
-        },
-        body: `data=${encodeURIComponent(query)}`,
-        signal: AbortSignal.timeout(10000),
-      });
-    } catch (e) {
-      // network-level failure (DNS, connection refused, timeout, ...) —
-      // treat like a retryable HTTP error and fail over to the next mirror.
-      if (attempt >= retries) throw e;
-      continue;
-    }
-    if (resp.ok) return resp.json();
-    // 429 (rate limited) and 5xx (mirror overloaded/down) are worth trying
-    // the next mirror for; 400 (bad query) and 406 would fail identically
-    // everywhere, so give up immediately instead of burning retries on it.
-    const retryable = resp.status === 429 || resp.status >= 500;
-    if (!retryable || attempt >= retries) {
-      const text = await resp.text().catch(() => '');
-      const err = new Error(`Overpass (${endpoint}) ${resp.status} ${resp.statusText}${text ? `: ${text.slice(0, 300)}` : ''}`);
-      err.status = resp.status;
-      throw err;
-    }
-    await new Promise(r => setTimeout(r, pauseMs));
+// 400 (bad query) and 406 fail identically on every mirror — if every mirror
+// fails, prefer reporting one of these as the cause over a timeout, since
+// it points at the actual problem instead of an incidental slow mirror.
+function isOverpassNonRetryable(status) {
+  return status === 400 || status === 406;
+}
+
+async function fetchOverpassMirror(endpoint, query, timeoutMs) {
+  const resp = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Accept': 'application/json',
+      'User-Agent': USER_AGENT,
+    },
+    body: `data=${encodeURIComponent(query)}`,
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    const err = new Error(`Overpass (${endpoint}) ${resp.status} ${resp.statusText}${text ? `: ${text.slice(0, 200)}` : ''}`);
+    err.status = resp.status;
+    throw err;
+  }
+  return resp.json();
+}
+
+// Races every mirror in parallel instead of trying them one at a time with
+// pauses in between — a sequential retry's worst case was the *sum* of all
+// four mirrors' timeouts (tens of seconds), which is exactly what made
+// natural-feature searches feel broken. Racing bounds the worst case to a
+// single timeoutMs, whichever mirror answers first wins, and Overpass's
+// "one request at a time" fair-use limit is per-mirror — one request each
+// to four independent mirrors doesn't violate it.
+async function overpassJsonWithRetry(query, timeoutMs = 9000) {
+  const attempts = OVERPASS_ENDPOINTS.map(endpoint => fetchOverpassMirror(endpoint, query, timeoutMs));
+  try {
+    return await Promise.any(attempts);
+  } catch (e) {
+    // AggregateError — every mirror failed. Surface a non-retryable status
+    // (bad query, identical everywhere) if any mirror reported one;
+    // otherwise report the first failure as representative.
+    const errors = e.errors || [e];
+    const nonRetryable = errors.find(err => isOverpassNonRetryable(err.status));
+    throw nonRetryable || errors[0];
   }
 }
 // ------------------------------------------------------------- photo search
@@ -444,7 +449,18 @@ app.post('/api/overpass', async (req, res) => {
   if (overpassCache[key]) return res.json(overpassCache[key]);
 
   try {
-    const data = await enqueueOverpass(() => overpassJsonWithRetry(query));
+    let promise = overpassInFlight.get(key);
+    if (!promise) {
+      promise = overpassJsonWithRetry(query);
+      overpassInFlight.set(key, promise);
+      // .finally() here creates its own promise chain, separate from the
+      // `promise` variable awaited below — without a .catch(), a rejection
+      // would be unhandled on *this* chain and crash the process even
+      // though the real error is properly handled where `promise` is
+      // awaited further down.
+      promise.finally(() => overpassInFlight.delete(key)).catch(() => {});
+    }
+    const data = await promise;
     overpassCache[key] = data;
     res.json(data);
   } catch (e) {

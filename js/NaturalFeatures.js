@@ -56,6 +56,10 @@ export async function findNaturalFeatures(center, radiusMi, feature) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query }),
+            // The server itself bounds its Overpass mirror race to ~9s; this is
+            // a defense-in-depth cap so a hung connection to our own server
+            // (Render hiccup, etc.) can't leave the search waiting forever.
+            signal: AbortSignal.timeout(15000),
         });
         if (!res.ok) throw new Error(`overpass proxy failed: ${res.status}`);
         return res.json();
