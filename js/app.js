@@ -78,6 +78,7 @@ const state = {
   query: null,     // parsed NLP intent, feeds the suitability score
   dynamicFeature: null, // Groq-detected natural feature spec (lake/river/etc), or null
   view: '2d',
+  hasSearched: false, // true once the user runs an AI search or picks a type filter — the map/results start empty, not pre-loaded with the full catalog
 };
 
 const EXAMPLES = [
@@ -135,6 +136,7 @@ function safeSuitability(loc, st, query) {
 }
 
 function runSearch() {
+  if (!state.hasSearched) return [];
   const results = [];
   // Dynamic feature results (from Groq's natural-feature detection) are
   // included whenever one is active — independent of the building-type chips,
@@ -247,6 +249,8 @@ function render() {
 
   document.getElementById('results-meta').innerHTML = anyFetchInFlight
     ? `Searching OpenStreetMap for ${escapeHtml(loadingLabel)} nearby…`
+    : !state.hasSearched
+    ? `Search to see locations near ${escapeHtml(state.centerName)}`
     : `<b>${results.length}</b> of ${LOCATIONS.length + dynamicLocations.length + dynamicTypeLocations.length} locations within ${state.radiusMi} mi of ${escapeHtml(state.centerName)}`;
 
   const list = document.getElementById('results');
@@ -257,7 +261,9 @@ function render() {
       Searching OpenStreetMap for ${escapeHtml(loadingLabel)} nearby…
     </div>`;
   } else if (!results.length) {
-    list.innerHTML = state.dynamicFeature
+    list.innerHTML = !state.hasSearched
+      ? `<div class="empty">Describe the location you need above, or pick a location type below, to start searching.</div>`
+      : state.dynamicFeature
       ? `<div class="empty">No ${escapeHtml(state.dynamicFeature.label.toLowerCase())} found within ${state.radiusMi} mi.<br>Widen the radius, search another city above, or try a different feature.</div>`
       : `<div class="empty">No locations in this radius.<br>Widen the radius, search another city above, or click the map to move the center.</div>`;
   } else {
@@ -292,7 +298,10 @@ function render() {
     }
   }
 
-  updateMap(state, results, [...LOCATIONS, ...dynamicLocations]);
+  // Before the first search, no markers should be on the map at all — not
+  // even dimmed ones — so pass an empty set rather than the full catalog.
+  const allLocations = state.hasSearched ? [...LOCATIONS, ...dynamicLocations, ...dynamicTypeLocations] : [];
+  updateMap(state, results, allLocations);
   if (state.view === '3d') update3D(state.center, results);
 
   // exposure-style HUD readout, top-left of the map viewport
@@ -354,6 +363,7 @@ function setSearching(on) {
 
 async function runAISearch(text) {
   setSearching(true);
+  state.hasSearched = true;
   try {
     const q = await parseQuery(text);
     applyParsedToState(q);
@@ -936,6 +946,7 @@ function initFilters() {
     chip.onclick = () => {
       if (state.types.has(key)) state.types.delete(key); else state.types.add(key);
       chip.classList.toggle('active');
+      state.hasSearched = true;
       render();
     };
     chipWrap.appendChild(chip);
