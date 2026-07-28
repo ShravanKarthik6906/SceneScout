@@ -1,10 +1,15 @@
 // Finds real-world natural/geographic features (lakes, rivers, beaches,
-// mountains, forests, whatever) near a point using OpenStreetMap's Overpass
-// API. Unlike a hardcoded "find lakes" module, the OSM tags to search for
-// come from Groq's understanding of the query (see server.js's
+// mountains, forests, whatever) near a point, primarily using OpenStreetMap's
+// Overpass API. Unlike a hardcoded "find lakes" module, the OSM tags to
+// search for come from Groq's understanding of the query (see server.js's
 // PARSE_SYSTEM_PROMPT) — this module just executes whatever tag query it's
 // given and shapes the results into location-like objects the rest of the
 // app already knows how to render.
+//
+// When Overpass finds nothing (even after relaxing the tag set — see
+// below), falls back to GeoNames: a separately, independently maintained
+// database, not dependent on the same volunteer OSM mapping/mirror
+// reliability that's been the recurring problem with Overpass.
 
 const MI_TO_M = 1609.34;
 
@@ -127,7 +132,37 @@ export async function findNaturalFeatures(center, radiusMi, feature) {
         results.push(toFeatureLocation(el, feature, name, lat, lng, diameterFt));
     }
 
-    return results;
+    if (results.length) return results;
+
+    // Overpass found nothing even after relaxing the tag set — most likely
+    // a genuine coverage gap (this exact class of problem is what's caused
+    // real, confirmed zero-result searches earlier: a France-only mirror,
+    // a mirror with no data for the queried region, ...). Try an entirely
+    // separate, independently-maintained data source before giving up.
+    console.warn('[naturalFeatures] Overpass found nothing, trying GeoNames fallback');
+    return await findViaGeoNames(center, radiusMi, feature);
+}
+
+async function findViaGeoNames(center, radiusMi, feature) {
+    const params = new URLSearchParams({
+        lat: center.lat, lng: center.lng, radiusMi: String(radiusMi), label: feature.label,
+    });
+    try {
+        const res = await fetch(`/api/geonames-search?${params}`, {
+            // The server's own GeoNames call is bounded to 10s; this must
+            // stay above that, same reasoning as queryOverpass's timeout.
+            signal: AbortSignal.timeout(15000),
+        });
+        if (!res.ok) {
+            console.warn('[naturalFeatures] geonames-search proxy failed:', res.status);
+            return [];
+        }
+        const places = await res.json();
+        return places.map(p => toGeoNamesLocation(p, feature));
+    } catch (e) {
+        console.warn('[naturalFeatures] GeoNames fallback failed:', e.message);
+        return [];
+    }
 }
 
 // Slugify a label into a stable, TYPES-safe key, e.g. "Mountain Peak" -> "mountain-peak".
@@ -137,13 +172,12 @@ function slugify(label) {
 
 // Builds a pseudo-"location" object matching the shape the rest of the app
 // expects (rate, sqft, intel, reviews, tags) so existing card/detail
-// rendering works without modification. type is a dynamic slug rather than
-// one of catalog.js's fixed TYPES keys — render()/openDetail() fall back to
+// rendering works without modification, regardless of which source (OSM or
+// GeoNames) produced it. type is a dynamic slug rather than one of
+// catalog.js's fixed TYPES keys — render()/openDetail() fall back to
 // _icon/_label/_color (set below) when TYPES[loc.type] doesn't exist, since
 // this feature type was never predefined.
-function toFeatureLocation(el, feature, name, lat, lng, diameterFt) {
-    const id = `feat-${slugify(feature.label)}-${el.type}-${el.id}`;
-    const sizeNote = diameterFt ? `roughly ${Math.round(diameterFt)} ft across` : 'a point feature (no area)';
+function buildNaturalFeatureLocation({ id, name, lat, lng, neighborhood, wikipedia, sqft, desc, feature }) {
     return {
         id, name,
         type: slugify(feature.label),   // dynamic — not in catalog.js's TYPES
@@ -152,15 +186,12 @@ function toFeatureLocation(el, feature, name, lat, lng, diameterFt) {
         _color: '#3e6e6a',
         lat, lng,
         address: `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
-        neighborhood: el.tags?.['addr:city'] || 'Unincorporated area',
-        // OSM's wikipedia=lang:Title tag, when present, lets /api/place-info
-        // fetch the exact matching article instead of guessing by geosearch.
-        wikipedia: el.tags?.wikipedia || null,
-        sqft: diameterFt ? Math.round(Math.PI * (diameterFt / 2) ** 2) : 0,
+        neighborhood: neighborhood || 'Unincorporated area',
+        wikipedia: wikipedia || null,
+        sqft: sqft || 0,
         ceilingFt: null,
         rate: 0,
-        desc: `A ${feature.label.toLowerCase()}, ${sizeNote}. Sourced from OpenStreetMap — ` +
-            `verify public access and any permit requirements before shooting.`,
+        desc,
         tags: ['natural feature', feature.label.toLowerCase(), 'outdoor', 'verify public access'],
         intel: {
             crewCapacity: null,
@@ -185,4 +216,34 @@ function toFeatureLocation(el, feature, name, lat, lng, diameterFt) {
             considerations: ['Verify public access and permit requirements before scouting a shoot here.'],
         },
     };
+}
+
+function toFeatureLocation(el, feature, name, lat, lng, diameterFt) {
+    const sizeNote = diameterFt ? `roughly ${Math.round(diameterFt)} ft across` : 'a point feature (no area)';
+    return buildNaturalFeatureLocation({
+        id: `feat-${slugify(feature.label)}-${el.type}-${el.id}`,
+        name, lat, lng,
+        neighborhood: el.tags?.['addr:city'],
+        // OSM's wikipedia=lang:Title tag, when present, lets /api/place-info
+        // fetch the exact matching article instead of guessing by geosearch.
+        wikipedia: el.tags?.wikipedia,
+        sqft: diameterFt ? Math.round(Math.PI * (diameterFt / 2) ** 2) : 0,
+        desc: `A ${feature.label.toLowerCase()}, ${sizeNote}. Sourced from OpenStreetMap — ` +
+            `verify public access and any permit requirements before shooting.`,
+        feature,
+    });
+}
+
+// GeoNames doesn't give a bounding box (just a point), so there's no size
+// to estimate — unlike OSM's area features, sqft stays 0 for all of these.
+function toGeoNamesLocation(g, feature) {
+    return buildNaturalFeatureLocation({
+        id: `geonames-${slugify(feature.label)}-${g.id}`,
+        name: g.name || `Unnamed ${feature.label.toLowerCase()}`,
+        lat: g.lat, lng: g.lng,
+        neighborhood: g.adminName || g.countryName,
+        desc: `A ${feature.label.toLowerCase()}. Sourced from GeoNames — ` +
+            `verify public access and any permit requirements before shooting.`,
+        feature,
+    });
 }

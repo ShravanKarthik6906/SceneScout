@@ -17,6 +17,14 @@ const LOCATIONIQ_KEY = process.env.LOCATIONIQ_KEY || 'YOUR_LOCATIONIQ_KEY_HERE';
 // studios). Sign up at https://foursquare.com/developers to get a key.
 const FOURSQUARE_API_KEY = process.env.FOURSQUARE_API_KEY || 'YOUR_FOURSQUARE_KEY_HERE';
 
+// GeoNames: free, independently-maintained global database of named
+// geographic features (not just OpenStreetMap's volunteer-mapped data) —
+// used as a fallback when Overpass finds nothing for a natural-feature
+// search. Free registration (not a real API key, just a username) at
+// https://www.geonames.org/login — the shared "demo" username works for
+// testing but is aggressively rate-limited; register your own for real use.
+const GEONAMES_USERNAME = process.env.GEONAMES_USERNAME || 'demo';
+
 // Groq: free tier, used to parse natural-language location briefs into
 // structured filters. Sign up at https://console.groq.com/keys to get a key.
 const GROQ_API_KEY = process.env.GROQ_API_KEY || 'YOUR_GROQ_KEY_HERE';
@@ -579,6 +587,69 @@ app.post('/api/overpass', async (req, res) => {
     res.json(data);
   } catch (e) {
     console.error('Overpass query failed:', e.message);
+    res.status(e.status || 500).json({ error: e.message || 'Internal server error' });
+  }
+});
+
+// -------------------------------------------------------------- GeoNames
+// Fallback natural-feature source for when Overpass finds nothing (see
+// findNaturalFeatures's fallback logic in NaturalFeatures.js). GeoNames
+// classifies features into broad classes (H = hydrographic, T = terrain,
+// V = vegetation, L = parks/areas, S = spot features) rather than OSM's
+// tag system, so there's no exact tag mapping — this guesses a class from
+// the feature's label instead, which is good enough to narrow the search
+// without excluding a genuine match on a label wording we didn't predict.
+let geonamesCache = {}; // query hash -> parsed result, in-memory only (see note above)
+
+function guessGeoNamesFeatureClass(label) {
+  const l = (label || '').toLowerCase();
+  if (/lake|river|pond|waterfall|stream|beach|bay|reservoir|creek/.test(l)) return 'H';
+  if (/mountain|peak|hill|cliff|canyon|ridge|volcano/.test(l)) return 'T';
+  if (/forest|wood/.test(l)) return 'V';
+  if (/park/.test(l)) return 'L';
+  if (/cave/.test(l)) return 'S';
+  return null; // no confident mapping — search without restricting by class
+}
+
+app.get('/api/geonames-search', async (req, res) => {
+  const { lat, lng, radiusMi, label } = req.query;
+  if (!lat || !lng) return res.status(400).json({ error: 'Missing lat/lng' });
+
+  // GeoNames caps findNearby's radius at 300km.
+  const radiusKm = Math.min(300, Math.round((+radiusMi || 15) * 1.60934));
+  const featureClass = guessGeoNamesFeatureClass(label);
+  const key = 'geonames:' + hashQuery(`${label || ''}|${(+lat).toFixed(3)},${(+lng).toFixed(3)},${radiusKm}`);
+  if (geonamesCache[key]) return res.json(geonamesCache[key]);
+
+  const params = new URLSearchParams({
+    lat, lng, radius: String(radiusKm), maxRows: '50', username: GEONAMES_USERNAME,
+  });
+  if (featureClass) params.set('featureClass', featureClass);
+
+  try {
+    const response = await fetch(`http://api.geonames.org/findNearbyJSON?${params}`, {
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) {
+      const err = new Error(`GeoNames ${response.status}`);
+      err.status = response.status;
+      throw err;
+    }
+    const data = await response.json();
+    // GeoNames returns 200 OK with a {status:{message,value}} body on its
+    // own errors (bad/rate-limited username, etc.) instead of an HTTP
+    // error status — has to be checked explicitly.
+    if (data.status) throw new Error(`GeoNames: ${data.status.message}`);
+    const results = (data.geonames || []).map(g => ({
+      id: String(g.geonameId), name: g.name || null,
+      lat: +g.lat, lng: +g.lng,
+      countryName: g.countryName || null,
+      adminName: g.adminName1 || null,
+    })).filter(g => Number.isFinite(g.lat) && Number.isFinite(g.lng));
+    geonamesCache[key] = results;
+    res.json(results);
+  } catch (e) {
+    console.error('GeoNames search error:', e.message);
     res.status(e.status || 500).json({ error: e.message || 'Internal server error' });
   }
 });
