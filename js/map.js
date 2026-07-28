@@ -114,6 +114,7 @@ export function updateMap(state, results, allLocations) {
   }
 
   const resultIds = new Set(results.map(r => r.id));
+  const allLocationIds = new Set(allLocations.map(l => l.id));
   for (const loc of allLocations) {
     const inResults = resultIds.has(loc.id);
     const t = typeInfo(loc);
@@ -132,6 +133,18 @@ export function updateMap(state, results, allLocations) {
     if (el) {
       el.style.setProperty('--c', t.color || TEAL);
       el.classList.toggle('dim', !inResults);
+    }
+  }
+
+  // Dynamic locations (natural features, real-business type searches) get
+  // fresh ids on every search — without this, a marker from an earlier
+  // search whose location isn't part of the current view at all (not even
+  // dimmed) stays on the map forever, piling up across every search made
+  // in the session.
+  for (const [id, m] of markers) {
+    if (!allLocationIds.has(id)) {
+      map.removeLayer(m);
+      markers.delete(id);
     }
   }
 }

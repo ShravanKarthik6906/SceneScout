@@ -810,11 +810,20 @@ function saveSettings() {
 // ---------------------------------------------------------------- 2D / 3D
 let exploreMode = false; // true when "Explore Globe" is active — map clicks discover a place instead of doing nothing
 
-async function setView(view) {
-  if (view === state.view) return;
+// force: skip the no-op guard even if `view` already matches state.view.
+// Explore Globe needs this — entering it while already on the "3D" tab
+// (state.view is already '3d' from an earlier click) must still show the
+// 3D container and (re-)run ensure3D/flyHome3D, not silently no-op just
+// because the *tab* didn't change.
+async function setView(view, { force = false } = {}) {
+  if (view === state.view && !force) return;
   state.view = view;
   setImmersive('3d', view === '3d');
-  document.querySelectorAll('#map-toggle button').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+  // [data-view] here too — #explore-toggle also lives inside #map-toggle
+  // but isn't a 2D/3D toggle button; without this filter this was stripping
+  // its 'active' class the instant enterExploreMode's own setView('3d')
+  // call ran, undoing the class it had just added two lines earlier.
+  document.querySelectorAll('#map-toggle button[data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   const el3d = document.getElementById('map3d');
   const el2d = document.getElementById('map2d');
   if (view === '3d') {
@@ -841,7 +850,7 @@ async function setView(view) {
 async function enterExploreMode() {
   exploreMode = true;
   document.getElementById('explore-toggle')?.classList.add('active');
-  await setView('3d');
+  await setView('3d', { force: true });
   setGlobeMode(true);
   flyToGlobalView();
   startGlobeSpin();
@@ -1013,7 +1022,13 @@ async function init() {
     if (currentLoc) window.open(`https://www.google.com/maps/dir/?api=1&destination=${currentLoc.lat},${currentLoc.lng}`, '_blank');
   };
 
-  document.querySelectorAll('#map-toggle button').forEach(b => { b.onclick = () => setView(b.dataset.view); });
+  // #explore-toggle also lives inside #map-toggle (getOrCreateExploreButton
+  // appends it there) but isn't a 2D/3D toggle — it has no data-view and
+  // wires its own enter/exitExploreMode handler. Without this guard, this
+  // loop was overwriting that handler with setView(undefined), silently
+  // breaking Explore Globe (setView(undefined) falls into the "hide 3D"
+  // branch instead of ever entering explore mode).
+  document.querySelectorAll('#map-toggle button[data-view]').forEach(b => { b.onclick = () => setView(b.dataset.view); });
 
   document.getElementById('basemap-toggle').onclick = (e) => {
     const on = setSatellite(!isSatellite());
