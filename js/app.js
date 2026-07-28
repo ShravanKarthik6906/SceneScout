@@ -10,7 +10,16 @@ import { parseQuery } from './nlp.js';
 import { computeSuitability } from './score.js';
 import { sunTimes, sunPosition, fmtTime, fmtTimeAt, tzAbbr, compass, geocode, forecast, weatherText, fetchLocationPhotos, fetchPlaceInfo, reverseGeocode } from './intel.js';
 import { ensure3D, resize3D, update3D, flyHome3D, flyToListing3D, setGlobeMode, flyToGlobalView } from './map3d.js';
-import { findNaturalFeatures } from './NaturalFeatures.js';
+import { findNaturalFeatures, findRealTypeLocations } from './NaturalFeatures.js';
+
+// Building types for which real-world results can be pulled from
+// OpenStreetMap in addition to the curated catalog. Not every catalog type
+// has a reliable OSM tag (there's no standard tagging convention for
+// "rentable film/production space"), so this starts with just the ones
+// that do — craft=photographer is OSM's real tag for photography studios.
+const REAL_SEARCHABLE_TYPES = {
+  studio: { label: 'Studio', osmTags: [{ key: 'craft', value: 'photographer' }], elementTypes: ['node', 'way'] },
+};
 
 const KEY_STORAGE = 'scenescout-gmaps-key';
 // Free public client token — register at mapillary.com/dashboard.
@@ -50,6 +59,12 @@ function loadMapillaryLib() {
 // OpenStreetMap per search, not part of the curated catalog.
 let dynamicLocations = [];
 let dynamicSearchKey = ''; // dedupe: avoid re-fetching for an unchanged view
+
+// Same idea as dynamicLocations/dynamicSearchKey above, but for real
+// businesses matching a selected building-type filter (see
+// REAL_SEARCHABLE_TYPES) rather than a Groq-detected natural feature.
+let dynamicTypeLocations = [];
+let dynamicTypeSearchKey = '';
 
 const state = {
   center: { lat: CENTERS[0].lat, lng: CENTERS[0].lng },
@@ -124,7 +139,14 @@ function runSearch() {
   // Dynamic feature results (from Groq's natural-feature detection) are
   // included whenever one is active — independent of the building-type chips,
   // since "lake" or "mountain" isn't a concept those chips represent.
-  const candidates = state.dynamicFeature ? [...LOCATIONS, ...dynamicLocations] : LOCATIONS;
+  // dynamicTypeLocations (real businesses for a selected type filter, e.g.
+  // real photo studios) already carries a proper TYPES key, so the type
+  // filter below applies to them exactly like the curated catalog.
+  const candidates = [
+    ...LOCATIONS,
+    ...(state.dynamicFeature ? dynamicLocations : []),
+    ...dynamicTypeLocations,
+  ];
   const wantedTypes = new Set([...state.types, ...(state.query ? state.query.types : [])]);
 
   for (const loc of candidates) {
@@ -179,6 +201,32 @@ async function refreshDynamicFeatureIfNeeded() {
   }
 }
 
+// Same fetch-if-view-changed pattern as refreshDynamicFeatureIfNeeded, for
+// real-world businesses matching whichever selected type filters have a
+// real OSM source (see REAL_SEARCHABLE_TYPES). Multiple such types could
+// be selected at once, so this fetches each independently and merges.
+let dynamicTypeFetchInFlight = false;
+
+async function refreshDynamicTypesIfNeeded() {
+  const activeTypes = [...state.types].filter(t => REAL_SEARCHABLE_TYPES[t]).sort();
+  if (!activeTypes.length) { dynamicTypeLocations = []; dynamicTypeSearchKey = ''; dynamicTypeFetchInFlight = false; return; }
+
+  const key = JSON.stringify(activeTypes) +
+    `|${state.center.lat.toFixed(3)},${state.center.lng.toFixed(3)},${state.radiusMi}`;
+  if (key === dynamicTypeSearchKey) return; // already fetched for this view
+  dynamicTypeSearchKey = key;
+
+  dynamicTypeFetchInFlight = true;
+  const batches = await Promise.all(
+    activeTypes.map(t => findRealTypeLocations(state.center, state.radiusMi, t, REAL_SEARCHABLE_TYPES[t]))
+  );
+  dynamicTypeFetchInFlight = false;
+  if (dynamicTypeSearchKey === key) {
+    dynamicTypeLocations = batches.flat();
+    render();
+  }
+}
+
 // TYPES only covers curated building categories; dynamic features (lake,
 // river, mountain, ...) carry their own display info on the object itself.
 // Every place that needs a type's icon/label/color should go through this.
@@ -189,17 +237,24 @@ function typeInfo(loc) {
 // ---------------------------------------------------------------- results
 function render() {
   refreshDynamicFeatureIfNeeded(); // fire-and-forget; re-renders itself once data lands
+  refreshDynamicTypesIfNeeded();   // same, for real-business type searches (e.g. real studios)
   const results = runSearch();
-  document.getElementById('results-meta').innerHTML = dynamicFetchInFlight
-    ? `Searching OpenStreetMap for “${escapeHtml(state.dynamicFeature.label)}” nearby…`
-    : `<b>${results.length}</b> of ${LOCATIONS.length + dynamicLocations.length} locations within ${state.radiusMi} mi of ${escapeHtml(state.centerName)}`;
+
+  const loadingLabel = dynamicFetchInFlight
+    ? `“${state.dynamicFeature.label}”`
+    : [...state.types].filter(t => REAL_SEARCHABLE_TYPES[t]).map(t => `“${TYPES[t].label}”`).join(' + ');
+  const anyFetchInFlight = dynamicFetchInFlight || dynamicTypeFetchInFlight;
+
+  document.getElementById('results-meta').innerHTML = anyFetchInFlight
+    ? `Searching OpenStreetMap for ${escapeHtml(loadingLabel)} nearby…`
+    : `<b>${results.length}</b> of ${LOCATIONS.length + dynamicLocations.length + dynamicTypeLocations.length} locations within ${state.radiusMi} mi of ${escapeHtml(state.centerName)}`;
 
   const list = document.getElementById('results');
   list.innerHTML = '';
-  if (dynamicFetchInFlight) {
+  if (anyFetchInFlight) {
     list.innerHTML = `<div class="loading-state">
       <div class="spinner"></div>
-      Searching OpenStreetMap for “${escapeHtml(state.dynamicFeature.label)}” nearby…
+      Searching OpenStreetMap for ${escapeHtml(loadingLabel)} nearby…
     </div>`;
   } else if (!results.length) {
     list.innerHTML = state.dynamicFeature

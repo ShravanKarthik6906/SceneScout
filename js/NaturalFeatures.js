@@ -130,6 +130,90 @@ export async function findNaturalFeatures(center, radiusMi, feature) {
     return results;
 }
 
+// spec: { label, icon, osmTags: [{key,value}], elementTypes: string[] }
+// typeKey: one of catalog.js's TYPES keys (e.g. 'studio') — unlike
+// findNaturalFeatures's slugified custom type, this must match a real TYPES
+// key exactly so the type filter/scoring in score.js and app.js treats
+// these as first-class results, not a separate dynamic category.
+// center: {lat,lng}. radiusMi: search radius.
+export async function findRealTypeLocations(center, radiusMi, typeKey, spec) {
+    if (!spec || !Array.isArray(spec.osmTags) || !spec.osmTags.length) return [];
+
+    const radiusM = Math.round(radiusMi * MI_TO_M);
+    const query = buildOverpassQuery(center, radiusM, spec.osmTags, spec.elementTypes);
+    let elements = await queryOverpass(query);
+    if (!elements.length && spec.osmTags.length > 1) {
+        const relaxedQuery = buildOverpassQuery(center, radiusM, [spec.osmTags[0]], spec.elementTypes);
+        elements = await queryOverpass(relaxedQuery);
+    }
+
+    const results = [];
+    for (const el of elements) {
+        let lat, lng;
+        if (el.type === 'node' && typeof el.lat === 'number') {
+            lat = el.lat; lng = el.lon;
+        } else if (el.bounds) {
+            lat = (el.bounds.minlat + el.bounds.maxlat) / 2;
+            lng = (el.bounds.minlon + el.bounds.maxlon) / 2;
+        } else {
+            continue; // no usable coordinates
+        }
+        const name = el.tags?.name || `Unnamed ${spec.label.toLowerCase()}`;
+        results.push(toBusinessLocation(el, typeKey, spec, name, lat, lng));
+    }
+    return results;
+}
+
+// Real businesses (e.g. photography studios) come from OSM with none of
+// the curated catalog's modeled attributes (sqft, rate, ceiling height,
+// lighting condition) — unlike toFeatureLocation's natural features, there's
+// no size/geometry to estimate space from either, since these are almost
+// always point businesses, not mapped areas. Surfaced honestly as unknown
+// rather than invented, with a note to contact the business directly.
+function toBusinessLocation(el, typeKey, spec, name, lat, lng) {
+    const id = `biz-${typeKey}-${el.type}-${el.id}`;
+    const phone = el.tags?.phone || el.tags?.['contact:phone'] || null;
+    const website = el.tags?.website || el.tags?.['contact:website'] || null;
+    return {
+        id, name,
+        type: typeKey,
+        lat, lng,
+        address: el.tags?.['addr:housenumber'] && el.tags?.['addr:street']
+            ? `${el.tags['addr:housenumber']} ${el.tags['addr:street']}${el.tags['addr:city'] ? ', ' + el.tags['addr:city'] : ''}`
+            : `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+        neighborhood: el.tags?.['addr:city'] || el.tags?.['addr:suburb'] || 'Unincorporated area',
+        wikipedia: el.tags?.wikipedia || null,
+        sqft: 0,
+        ceilingFt: null,
+        rate: 0,
+        desc: `A real ${spec.label.toLowerCase()} business sourced from OpenStreetMap. ` +
+            `Rates, size, and availability aren't in OSM's data — contact directly to confirm.` +
+            (phone ? ` Phone: ${phone}.` : '') + (website ? ` Website: ${website}.` : ''),
+        tags: ['real business', spec.label.toLowerCase(), 'verify details directly'],
+        intel: {
+            crewCapacity: null,
+            windows: [],
+            factors: {
+                parking: { score: 50, note: 'Unverified — no data source for this yet' },
+                accessibility: { score: 50, note: 'Unverified — contact the business' },
+                noise: { score: 50, note: 'Unverified' },
+                privacy: { score: 50, note: 'Unverified — a working business, likely has staff/clients present' },
+                power: { score: 60, note: 'Likely available — verify with the business' },
+                permit: { score: 60, note: 'Commercial space — permitting is typically the business\'s to arrange' },
+            },
+            productionFriendliness: 40,
+            nearestAirport: { code: '—', mi: '—', name: 'Not calculated for real businesses yet' },
+            amenities: { equipment: 'Unknown', hotels: 'Unknown', dining: 'Unknown' },
+        },
+        reviews: {
+            rating: 0, count: 0,
+            summary: 'No review data available for real businesses yet.',
+            positives: [],
+            considerations: ['Contact the business directly to confirm rates, size, and availability.'],
+        },
+    };
+}
+
 // Slugify a label into a stable, TYPES-safe key, e.g. "Mountain Peak" -> "mountain-peak".
 function slugify(label) {
     return label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'feature';
