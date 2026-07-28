@@ -4,7 +4,3 @@ node_modules/
 *.log
 .DS_Store
 *-cache.json
-dist/
-venv/
-__pycache__/
-*.pyc
