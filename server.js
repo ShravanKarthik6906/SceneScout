@@ -12,6 +12,11 @@ const PORT = process.env.PORT || 3001;
 // Sign up at https://locationiq.com/register to get a key.
 const LOCATIONIQ_KEY = process.env.LOCATIONIQ_KEY || 'YOUR_LOCATIONIQ_KEY_HERE';
 
+// Foursquare Places API: free tier, real-world business search (used for
+// building types with no reliable catalog coverage, e.g. real photo
+// studios). Sign up at https://foursquare.com/developers to get a key.
+const FOURSQUARE_API_KEY = process.env.FOURSQUARE_API_KEY || 'YOUR_FOURSQUARE_KEY_HERE';
+
 // Groq: free tier, used to parse natural-language location briefs into
 // structured filters. Sign up at https://console.groq.com/keys to get a key.
 const GROQ_API_KEY = process.env.GROQ_API_KEY || 'YOUR_GROQ_KEY_HERE';
@@ -303,6 +308,72 @@ async function overpassJsonWithRetry(query, timeoutMs = 25000) {
     throw nonRetryable || errors[0];
   }
 }
+
+// ------------------------------------------------------------ places search
+// Real-world businesses (e.g. photo studios) via Foursquare's Places API —
+// unlike OpenStreetMap, this is an actual maintained business directory
+// with consistent nationwide coverage, not dependent on volunteer mapping
+// or fragile community-run query mirrors.
+let placesCache = {}; // query hash -> parsed result, in-memory only (see note above)
+
+app.get('/api/places-search', async (req, res) => {
+  const { lat, lng, radiusMi, query } = req.query;
+  if (!lat || !lng || !query) return res.status(400).json({ error: 'Missing lat/lng/query' });
+  if (!FOURSQUARE_API_KEY || FOURSQUARE_API_KEY === 'YOUR_FOURSQUARE_KEY_HERE') {
+    return res.status(500).json({ error: 'FOURSQUARE_API_KEY not set. Get a free key at foursquare.com/developers' });
+  }
+
+  // Foursquare caps radius at 100,000m; clamp rather than error on a wide search.
+  const radiusM = Math.min(100000, Math.round((+radiusMi || 15) * 1609.34));
+  const key = 'places:' + hashQuery(`${query}|${(+lat).toFixed(3)},${(+lng).toFixed(3)},${radiusM}`);
+  if (placesCache[key]) return res.json(placesCache[key]);
+
+  const url = 'https://api.foursquare.com/v3/places/search?' + new URLSearchParams({
+    ll: `${lat},${lng}`,
+    radius: String(radiusM),
+    query,
+    limit: '50',
+    // Explicit fields — v3's default response set doesn't reliably include
+    // contact info, and we want it for the detail view.
+    fields: 'fsq_id,name,geocodes,location,tel,website,categories',
+  });
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        // v3 takes the raw key in this header — no "Bearer" prefix.
+        'Authorization': FOURSQUARE_API_KEY,
+        'Accept': 'application/json',
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      const err = new Error(`Foursquare ${response.status}${text ? `: ${text.slice(0, 200)}` : ''}`);
+      err.status = response.status;
+      throw err;
+    }
+    const data = await response.json();
+    const results = (data.results || [])
+      .map(p => ({
+        id: p.fsq_id,
+        name: p.name,
+        lat: p.geocodes?.main?.latitude,
+        lng: p.geocodes?.main?.longitude,
+        address: p.location?.formatted_address || null,
+        neighborhood: p.location?.locality || p.location?.region || null,
+        phone: p.tel || null,
+        website: p.website || null,
+      }))
+      .filter(p => typeof p.lat === 'number' && typeof p.lng === 'number');
+    placesCache[key] = results;
+    res.json(results);
+  } catch (e) {
+    console.error('Places search error:', e.message);
+    res.status(e.status || 500).json({ error: e.message || 'Internal server error' });
+  }
+});
+
 // ------------------------------------------------------------- photo search
 // Real photos of a location. Two free, official, keyless sources — no
 // scraping: Wikimedia Commons first (great hit rate for actual real-world

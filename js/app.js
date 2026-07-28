@@ -10,15 +10,16 @@ import { parseQuery } from './nlp.js';
 import { computeSuitability } from './score.js';
 import { sunTimes, sunPosition, fmtTime, fmtTimeAt, tzAbbr, compass, geocode, forecast, weatherText, fetchLocationPhotos, fetchPlaceInfo, reverseGeocode } from './intel.js';
 import { ensure3D, resize3D, update3D, flyHome3D, flyToListing3D, setGlobeMode, flyToGlobalView } from './map3d.js';
-import { findNaturalFeatures, findRealTypeLocations } from './NaturalFeatures.js';
+import { findNaturalFeatures } from './NaturalFeatures.js';
+import { findRealPlaces } from './RealPlaces.js';
 
 // Building types for which real-world results can be pulled from
-// OpenStreetMap in addition to the curated catalog. Not every catalog type
-// has a reliable OSM tag (there's no standard tagging convention for
-// "rentable film/production space"), so this starts with just the ones
-// that do — craft=photographer is OSM's real tag for photography studios.
+// Foursquare's Places API in addition to the curated catalog. Not every
+// catalog type maps cleanly onto a real, searchable business category
+// (there's no real-world equivalent of "rentable film/production space" as
+// its own business type), so this starts with just the ones that do.
 const REAL_SEARCHABLE_TYPES = {
-  studio: { label: 'Studio', osmTags: [{ key: 'craft', value: 'photographer' }], elementTypes: ['node', 'way'] },
+  studio: { label: 'Studio', searchQuery: 'photography studio' },
 };
 
 const KEY_STORAGE = 'scenescout-gmaps-key';
@@ -204,9 +205,10 @@ async function refreshDynamicFeatureIfNeeded() {
 }
 
 // Same fetch-if-view-changed pattern as refreshDynamicFeatureIfNeeded, for
-// real-world businesses matching whichever selected type filters have a
-// real OSM source (see REAL_SEARCHABLE_TYPES). Multiple such types could
-// be selected at once, so this fetches each independently and merges.
+// real-world businesses (via Foursquare) matching whichever selected type
+// filters have a real, searchable business category (see
+// REAL_SEARCHABLE_TYPES). Multiple such types could be selected at once,
+// so this fetches each independently and merges.
 let dynamicTypeFetchInFlight = false;
 
 async function refreshDynamicTypesIfNeeded() {
@@ -220,7 +222,7 @@ async function refreshDynamicTypesIfNeeded() {
 
   dynamicTypeFetchInFlight = true;
   const batches = await Promise.all(
-    activeTypes.map(t => findRealTypeLocations(state.center, state.radiusMi, t, REAL_SEARCHABLE_TYPES[t]))
+    activeTypes.map(t => findRealPlaces(state.center, state.radiusMi, t, REAL_SEARCHABLE_TYPES[t]))
   );
   dynamicTypeFetchInFlight = false;
   if (dynamicTypeSearchKey === key) {
@@ -242,13 +244,17 @@ function render() {
   refreshDynamicTypesIfNeeded();   // same, for real-business type searches (e.g. real studios)
   const results = runSearch();
 
+  // Natural features (lakes, mountains, ...) still come from OpenStreetMap;
+  // type searches (e.g. real studios) come from Foursquare — say whichever
+  // is actually true rather than a source name for both.
+  const loadingSource = dynamicFetchInFlight ? 'OpenStreetMap' : 'Foursquare';
   const loadingLabel = dynamicFetchInFlight
     ? `“${state.dynamicFeature.label}”`
     : [...state.types].filter(t => REAL_SEARCHABLE_TYPES[t]).map(t => `“${TYPES[t].label}”`).join(' + ');
   const anyFetchInFlight = dynamicFetchInFlight || dynamicTypeFetchInFlight;
 
   document.getElementById('results-meta').innerHTML = anyFetchInFlight
-    ? `Searching OpenStreetMap for ${escapeHtml(loadingLabel)} nearby…`
+    ? `Searching ${loadingSource} for ${escapeHtml(loadingLabel)} nearby…`
     : !state.hasSearched
     ? `Search to see locations near ${escapeHtml(state.centerName)}`
     : `<b>${results.length}</b> of ${LOCATIONS.length + dynamicLocations.length + dynamicTypeLocations.length} locations within ${state.radiusMi} mi of ${escapeHtml(state.centerName)}`;
@@ -258,7 +264,7 @@ function render() {
   if (anyFetchInFlight) {
     list.innerHTML = `<div class="loading-state">
       <div class="spinner"></div>
-      Searching OpenStreetMap for ${escapeHtml(loadingLabel)} nearby…
+      Searching ${loadingSource} for ${escapeHtml(loadingLabel)} nearby…
     </div>`;
   } else if (!results.length) {
     list.innerHTML = !state.hasSearched
