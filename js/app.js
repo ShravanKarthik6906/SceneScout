@@ -9,7 +9,7 @@ import { openTour } from './tour.js';
 import { parseQuery } from './nlp.js';
 import { computeSuitability } from './score.js';
 import { sunTimes, sunPosition, fmtTime, fmtTimeAt, tzAbbr, compass, geocode, forecast, weatherText, fetchLocationPhotos, fetchPlaceInfo, reverseGeocode } from './intel.js';
-import { ensure3D, resize3D, update3D, flyHome3D, flyToListing3D, setGlobeMode, flyToGlobalView } from './map3d.js';
+import { ensure3D, resize3D, update3D, flyHome3D, flyToListing3D, setGlobeMode, flyToGlobalView, startGlobeSpin, stopGlobeSpin } from './map3d.js';
 import { findNaturalFeatures } from './NaturalFeatures.js';
 import { findRealPlaces } from './RealPlaces.js';
 
@@ -844,11 +844,13 @@ async function enterExploreMode() {
   await setView('3d');
   setGlobeMode(true);
   flyToGlobalView();
+  startGlobeSpin();
 }
 
 function exitExploreMode() {
   exploreMode = false;
   document.getElementById('explore-toggle')?.classList.remove('active');
+  stopGlobeSpin();
   setGlobeMode(false);
   closeDiscoverPanel();
   if (state.view === '3d') flyHome3D(state.center);

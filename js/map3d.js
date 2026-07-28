@@ -109,6 +109,63 @@ export function flyToGlobalView() {
   map.flyTo({ center: [0, 20], zoom: 1.3, pitch: 0, bearing: 0, duration: 2000 });
 }
 
+// Slow auto-rotation for Explore Globe mode — standard MapLibre/Mapbox
+// "spinning globe" pattern: nudge the center longitude westward on every
+// moveend, which chains into a continuous rotation. Stops the moment the
+// user actually interacts (drag/scroll/pinch) rather than fighting them,
+// and only spins while zoomed out far enough to still be looking at the
+// whole globe — no point spinning once they've zoomed into a region.
+let spinEnabled = false;
+const SECONDS_PER_REVOLUTION = 180;
+const MAX_SPIN_ZOOM = 4;
+const SLOW_SPIN_ZOOM = 2.5;
+
+function spinStep() {
+  if (!map || !spinEnabled) return;
+  const zoom = map.getZoom();
+  if (zoom < MAX_SPIN_ZOOM) {
+    let distancePerSecond = 360 / SECONDS_PER_REVOLUTION;
+    if (zoom > SLOW_SPIN_ZOOM) {
+      // ease out as we approach the zoom level where spinning would stop
+      distancePerSecond *= (MAX_SPIN_ZOOM - zoom) / (MAX_SPIN_ZOOM - SLOW_SPIN_ZOOM);
+    }
+    const center = map.getCenter();
+    center.lng -= distancePerSecond;
+    map.easeTo({ center, duration: 1000, easing: (n) => n });
+  }
+}
+
+function stopSpinOnInteraction() { spinEnabled = false; }
+
+export function startGlobeSpin() {
+  if (!map) return;
+  spinEnabled = true;
+  map.on('moveend', spinStep);
+  // Any of these firing means the user took the wheel — mousedown alone
+  // isn't enough (that also fires from a plain click), so key off the
+  // drag/zoom/rotate/pitch gestures specifically.
+  map.on('dragstart', stopSpinOnInteraction);
+  map.on('zoomstart', stopSpinOnInteraction);
+  map.on('rotatestart', stopSpinOnInteraction);
+  map.on('pitchstart', stopSpinOnInteraction);
+  // If the map is already sitting still, nothing will ever fire moveend to
+  // kick the chain off — start it directly. If it's mid-flight (the usual
+  // case: this is called right alongside flyToGlobalView()), let that
+  // flight's own moveend start the chain instead of fighting it for the
+  // camera with a competing easeTo.
+  if (!map.isMoving()) spinStep();
+}
+
+export function stopGlobeSpin() {
+  if (!map) return;
+  spinEnabled = false;
+  map.off('moveend', spinStep);
+  map.off('dragstart', stopSpinOnInteraction);
+  map.off('zoomstart', stopSpinOnInteraction);
+  map.off('rotatestart', stopSpinOnInteraction);
+  map.off('pitchstart', stopSpinOnInteraction);
+}
+
 export function resize3D() { if (map) map.resize(); }
 
 // A location only has valid, renderable coordinates if both lat/lng are
