@@ -4,3 +4,7 @@ node_modules/
 *.log
 .DS_Store
 *-cache.json
+
+data/*
+!data/locations.json
+supply-chain-globe/

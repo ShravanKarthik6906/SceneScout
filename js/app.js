@@ -2,7 +2,12 @@
 // intelligence, review summaries, and the 2D / 3D map toggle. Orchestration
 // only; the heavy lifting lives in the focused modules it imports.
 
-import { LOCATIONS, TYPES, CENTERS, LIGHT_LABELS } from './catalog.js';
+// LOCATIONS is populated at startup by loadCatalog() from /api/locations,
+// which serves data/locations.json — real US property records from the Zillow
+// US House Listings 2023 Kaggle dataset. It starts empty; the app shows the
+// "search to see locations" placeholder until the fetch resolves.
+let LOCATIONS = [];
+import { TYPES, CENTERS, LIGHT_LABELS } from './catalog.js';
 import { initMap, updateMap, flyToListing, fitToRadius, setSelectedMarker, clearSelectedMarker, setSatellite, isSatellite } from './map.js';
 import { drawPlanThumb, drawIsoHero } from './thumbs.js';
 import { openTour } from './tour.js';
@@ -257,7 +262,7 @@ function render() {
     ? `Searching ${loadingSource} for ${escapeHtml(loadingLabel)} nearby…`
     : !state.hasSearched
     ? `Search to see locations near ${escapeHtml(state.centerName)}`
-    : `<b>${results.length}</b> of ${LOCATIONS.length + dynamicLocations.length + dynamicTypeLocations.length} locations within ${state.radiusMi} mi of ${escapeHtml(state.centerName)}`;
+    : `<b>${results.length}</b> of ${LOCATIONS.length + dynamicLocations.length + dynamicTypeLocations.length} real locations within ${state.radiusMi} mi of ${escapeHtml(state.centerName)}`;
 
   const list = document.getElementById('results');
   list.innerHTML = '';
@@ -288,7 +293,7 @@ function render() {
           <div class="card-stats">
             <span>${loc.sqft.toLocaleString()} ft²</span>
             <span>${loc.ceilingFt ? loc.ceilingFt + ' ft ceil' : 'open air'}</span>
-            <span>$${loc.rate}/hr</span>
+            <span>$${loc.rate}/day</span>
             <span>${loc.distMi.toFixed(1)} mi</span>
           </div>
         </div>`;
@@ -341,8 +346,8 @@ function syncFilterControls() {
   sq.value = Math.min(10000, state.minSqft || 0);
   document.getElementById('sqft-label').textContent = state.minSqft ? `${state.minSqft.toLocaleString()}+ ft²` : 'Any';
   const rt = document.getElementById('rate-range');
-  rt.value = isFinite(state.maxRate) ? Math.min(600, state.maxRate) : 600;
-  document.getElementById('rate-label').textContent = isFinite(state.maxRate) ? `≤ $${state.maxRate}/hr` : 'Any';
+  rt.value = isFinite(state.maxRate) ? Math.min(700, state.maxRate) : 700;
+  document.getElementById('rate-label').textContent = isFinite(state.maxRate) ? `≤ ${state.maxRate}/day` : 'Any';
   document.getElementById('light-select').value = state.light;
   const rr = document.getElementById('radius-range');
   rr.value = state.radiusMi; document.getElementById('radius-label').textContent = `${state.radiusMi} mi`;
@@ -434,7 +439,7 @@ function openDetail(loc) {
   document.getElementById('detail-stats').innerHTML = `
     <div><b id="stat-sqft">0</b><span>sq ft</span></div>
     <div><b id="stat-ceil">${loc.ceilingFt ? '0' : '—'}</b><span>ft ceilings</span></div>
-    <div><b id="stat-rate">$0</b><span>per hour</span></div>
+    <div><b id="stat-rate">$0</b><span>est. per day</span></div>
     <div><b id="stat-crew">${loc.intel.crewCapacity != null ? '~0' : '—'}</b><span>crew capacity</span></div>`;
   animateCount('stat-sqft', loc.sqft);
   if (loc.ceilingFt) animateCount('stat-ceil', loc.ceilingFt);
@@ -977,7 +982,7 @@ function initFilters() {
   };
   bindRange('radius-range', 'radius-label', v => `${v} mi`, v => { state.radiusMi = v; });
   bindRange('sqft-range', 'sqft-label', v => v ? `${v.toLocaleString()}+ ft²` : 'Any', v => { state.minSqft = v; });
-  bindRange('rate-range', 'rate-label', v => v >= 600 ? 'Any' : `≤ $${v}/hr`, v => { state.maxRate = v >= 600 ? Infinity : v; });
+  bindRange('rate-range', 'rate-label', v => v >= 600 ? 'Any' : `≤ ${v}/day`, v => { state.maxRate = v >= 600 ? Infinity : v; });
 
   document.getElementById('light-select').onchange = (e) => { state.light = e.target.value; render(); };
   document.getElementById('sort-select').onchange = (e) => { state.sort = e.target.value; render(); };
@@ -991,11 +996,29 @@ function initFilters() {
   geoInput.closest('.filter-row').appendChild(status);
 }
 
+// Fetches the bundled catalog from /api/locations once at startup and
+// populates the module-level LOCATIONS array. Fires a render() after the
+// fetch resolves so the map shows the full set the moment data is ready.
+// Failures are non-fatal — the app still works for natural-feature and
+// Foursquare searches; the catalog just stays empty.
+async function loadCatalog() {
+  try {
+    const res = await fetch('/api/locations', { signal: AbortSignal.timeout(30000) });
+    if (!res.ok) throw new Error(`/api/locations returned ${res.status}`);
+    LOCATIONS = await res.json();
+    console.log(`[catalog] Loaded ${LOCATIONS.length} real locations`);
+    render(); // re-render now that we have data
+  } catch (e) {
+    console.warn('[catalog] Failed to load locations:', e.message);
+  }
+}
+
 async function init() {
   initAISearch();
   initFilters();
   getOrCreateExploreButton();
   syncFilterControls();
+  loadCatalog(); // fire-and-forget — renders again when data lands
   await initMap({
     onCenterChange: (lat, lng) => { moveCenter(lat, lng); render(); },
     onMarkerClick: (id) => {

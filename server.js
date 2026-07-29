@@ -2,6 +2,7 @@
 const express = require('express');
 const cors = require('cors'); // enable CORS
 const path = require('path');
+const fs = require('fs');
 
 const app = express();
 app.use(cors());
@@ -111,7 +112,7 @@ Output ONLY a JSON object, no prose, matching exactly this shape:
   "styleWords": string[],   // architectural/mood adjectives mentioned, lowercase, e.g. "modern", "industrial", "brick"
   "light": string | null,   // one of "abundant", "moderate", "controlled", or null if not mentioned
   "minSqft": number | null, // minimum square footage implied, or null
-  "maxRate": number | null, // max hourly rate in USD implied, or null (if given per day, convert: rate/10)
+  "maxRate": number | null, // max daily rate in USD implied, or null (rate field is per-day; if user gives per-hour, multiply by 10)
   "radiusMi": number | null,// search radius in miles if explicitly stated, or null
   "locationText": string | null, // a city/neighborhood/place name if mentioned, or null
   "naturalFeature": {       // set ONLY if the brief describes a natural/geographic feature
@@ -652,6 +653,146 @@ app.get('/api/geonames-search', async (req, res) => {
     console.error('GeoNames search error:', e.message);
     res.status(e.status || 500).json({ error: e.message || 'Internal server error' });
   }
+});
+
+// ----------------------------------------------------------- bundled catalog
+// Locations derived from the Zillow US House Listings 2023 Kaggle dataset
+// (febinphilips/us-house-listings-2023). Processed once by
+// scripts/build-catalog.js and committed as data/locations.json — zero
+// runtime dependency on Kaggle or any external property API.
+//
+// Floor plans are stored as 8 type-keyed templates (not repeated per-location
+// in the JSON) and injected server-side so the client always gets fully-formed
+// location objects identical in shape to the old catalog.js output.
+const CATALOG_PATH = path.join(__dirname, 'data', 'locations.json');
+
+const FLOOR_PLAN_TEMPLATES = {
+  studio: {
+    rooms: [
+      { name: 'Stage',        x: 0,  z: 0,   w: 18, d: 14,  h: 6,   style: 'studio' },
+      { name: 'Control Room', x: 18, z: 0,   w: 6,  d: 5,   h: 3,   style: 'control', win: { e: 1 } },
+      { name: 'Makeup',       x: 18, z: 5,   w: 6,  d: 4.5, h: 3,   style: 'makeup',  win: { e: 1 } },
+      { name: 'Lounge',       x: 18, z: 9.5, w: 6,  d: 4.5, h: 3,   style: 'lounge',  win: { e: 1, s: 1 } },
+    ],
+    doors: [
+      { x: 18, z: 2.5, dir: 'v', width: 1.6 },
+      { x: 18, z: 7.2, dir: 'v', width: 1.4 },
+      { x: 21, z: 5,   dir: 'h', width: 1.2 },
+    ],
+  },
+  warehouse: {
+    rooms: [
+      { name: 'Main Floor', x: 0,  z: 0, w: 30, d: 24, h: 7,   style: 'warehouse', win: { n: 3 }, sky: 4 },
+      { name: 'Office',     x: 30, z: 0, w: 8,  d: 6,  h: 3,   style: 'office',    win: { e: 2, n: 1 } },
+      { name: 'Workshop',   x: 30, z: 6, w: 8,  d: 9,  h: 3.5, style: 'shop',      win: { e: 2 } },
+    ],
+    doors: [
+      { x: 30, z: 3,  dir: 'v', width: 1.8 },
+      { x: 30, z: 10, dir: 'v', width: 2.4 },
+      { x: 34, z: 6,  dir: 'h', width: 1.4 },
+    ],
+  },
+  loft: {
+    rooms: [
+      { name: 'Main Loft',   x: 0,  z: 0, w: 15, d: 12, h: 4.3, style: 'loft',    win: { n: 4, w: 3 }, sky: 2 },
+      { name: 'Kitchenette', x: 15, z: 0, w: 5,  d: 6,  h: 3.2, style: 'kitchen', win: { n: 1, e: 1 } },
+      { name: 'Green Room',  x: 15, z: 6, w: 5,  d: 6,  h: 3.2, style: 'lounge',  win: { e: 1, s: 1 } },
+    ],
+    doors: [
+      { x: 15, z: 3,   dir: 'v', width: 1.6 },
+      { x: 15, z: 9,   dir: 'v', width: 1.6 },
+      { x: 17.5, z: 6, dir: 'h', width: 1.2 },
+    ],
+  },
+  house: {
+    rooms: [
+      { name: 'Living Room', x: 0, z: 0,   w: 6, d: 5,   h: 2.9, style: 'living',  win: { n: 2, w: 1 } },
+      { name: 'Kitchen',     x: 6, z: 0,   w: 5, d: 5,   h: 2.9, style: 'kitchen', win: { n: 1, e: 1 } },
+      { name: 'Bedroom',     x: 0, z: 5,   w: 6, d: 4.5, h: 2.9, style: 'bed',     win: { w: 1, s: 2 } },
+      { name: 'Studio Room', x: 6, z: 5,   w: 5, d: 4.5, h: 2.9, style: 'office',  win: { s: 1, e: 1 } },
+    ],
+    doors: [
+      { x: 6,   z: 2.2, dir: 'v', width: 1.3 },
+      { x: 2.8, z: 5,   dir: 'h', width: 1.2 },
+      { x: 8.6, z: 5,   dir: 'h', width: 1.2 },
+    ],
+  },
+  estate: {
+    rooms: [
+      { name: 'Ballroom',     x: 0,  z: 0, w: 12, d: 9, h: 4.6, style: 'ballroom',     win: { n: 4, w: 2 } },
+      { name: 'Foyer',        x: 12, z: 0, w: 6,  d: 9, h: 4.6, style: 'foyer',        win: { n: 2 } },
+      { name: 'Library',      x: 18, z: 0, w: 6,  d: 5, h: 3.4, style: 'library',      win: { n: 1, e: 1 } },
+      { name: 'Dining Room',  x: 18, z: 5, w: 6,  d: 4, h: 3.4, style: 'dining',       win: { e: 1, s: 1 } },
+      { name: 'Conservatory', x: 12, z: 9, w: 6,  d: 5, h: 3.6, style: 'conservatory', win: { s: 2, e: 2 }, sky: 2 },
+    ],
+    doors: [
+      { x: 12, z: 4.5, dir: 'v', width: 2.2 },
+      { x: 18, z: 2.5, dir: 'v', width: 1.5 },
+      { x: 21, z: 5,   dir: 'h', width: 1.3 },
+      { x: 18, z: 7,   dir: 'v', width: 1.4 },
+      { x: 15, z: 9,   dir: 'h', width: 1.8 },
+    ],
+  },
+  rooftop: {
+    rooms: [
+      { name: 'Main Deck',        x: 0,  z: 0, w: 14, d: 9, h: 1.1, style: 'deck',   open: true },
+      { name: 'West Deck',        x: 14, z: 4, w: 6,  d: 5, h: 1.1, style: 'deck',   open: true },
+      { name: 'Penthouse Lounge', x: 14, z: 0, w: 6,  d: 4, h: 3,   style: 'lounge', win: { n: 2, e: 1 } },
+    ],
+    doors: [
+      { x: 14, z: 2,   dir: 'v', width: 1.6 },
+      { x: 14, z: 6.5, dir: 'v', width: 5   },
+      { x: 17, z: 4,   dir: 'h', width: 1.4 },
+    ],
+  },
+  storefront: {
+    rooms: [
+      { name: 'Bar Room',    x: 0, z: 0, w: 12, d: 8, h: 3.6, style: 'bar',     win: { n: 3 } },
+      { name: 'Back Lounge', x: 0, z: 8, w: 7,  d: 6, h: 3.2, style: 'lounge',  win: { w: 1 } },
+      { name: 'Kitchen',     x: 7, z: 8, w: 5,  d: 6, h: 3.2, style: 'kitchen', win: { s: 1, e: 1 } },
+    ],
+    doors: [
+      { x: 3.5, z: 8, dir: 'h', width: 1.6 },
+      { x: 9,   z: 8, dir: 'h', width: 1.4 },
+      { x: 7,   z: 11, dir: 'v', width: 1.2 },
+    ],
+  },
+  gallery: {
+    rooms: [
+      { name: 'Gallery A',    x: 0,  z: 0, w: 12, d: 9, h: 4.2, style: 'gallery', win: { n: 1 }, sky: 3 },
+      { name: 'Gallery B',    x: 12, z: 0, w: 8,  d: 9, h: 4.2, style: 'gallery', sky: 2 },
+      { name: 'Project Room', x: 0,  z: 9, w: 6,  d: 5, h: 3.2, style: 'office',  win: { s: 1, w: 1 } },
+    ],
+    doors: [
+      { x: 12, z: 4.5, dir: 'v', width: 2.6 },
+      { x: 3,  z: 9,   dir: 'h', width: 1.8 },
+    ],
+  },
+};
+
+// Load and augment the catalog once at startup — no per-request I/O.
+let CATALOG = null;
+function loadCatalog() {
+  if (CATALOG) return CATALOG;
+  try {
+    const raw = JSON.parse(fs.readFileSync(CATALOG_PATH, 'utf8'));
+    // Inject floor plans by type (they were stripped from the JSON to save size)
+    CATALOG = raw.map(loc => {
+      if (!loc.floorplan && FLOOR_PLAN_TEMPLATES[loc.type]) {
+        return { ...loc, floorplan: FLOOR_PLAN_TEMPLATES[loc.type] };
+      }
+      return loc;
+    });
+    console.log(`[catalog] Loaded ${CATALOG.length} locations from ${CATALOG_PATH}`);
+  } catch (e) {
+    console.error('[catalog] Failed to load locations.json:', e.message);
+    CATALOG = [];
+  }
+  return CATALOG;
+}
+
+app.get('/api/locations', (req, res) => {
+  res.json(loadCatalog());
 });
 
 // Serve static frontend files
