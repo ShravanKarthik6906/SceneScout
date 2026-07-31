@@ -1685,3 +1685,119 @@ input[type="range"] {
 .maplibregl-popup {
   display: none;
 }
+
+/* The starfield canvas sits inside #map, before #map3d in DOM order, so it
+   paints behind the globe. pointer-events:none keeps all clicks/drags on the
+   globe working normally. Hidden by default; shown only in Explore Globe mode
+   via showStarfield() / hideStarfield() in map3d.js. */
+#starfield-canvas {
+  position: absolute;
+  inset: 0;
+  display: none;
+  pointer-events: none;
+  background: #000004;
+  z-index: 0;
+}
+
+/* --------------------------------------------------------- explore globe */
+.discover-panel {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 600;
+  width: min(400px, 92vw);
+  background: rgba(11, 13, 13, 0.95);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 16px;
+  font-family: var(--font-body);
+  backdrop-filter: blur(8px);
+}
+
+.discover-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.discover-head h3 {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.discover-close {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 2px;
+  width: 26px;
+  height: 26px;
+  cursor: pointer;
+  font-size: 13px;
+  flex-shrink: 0;
+  transition: border-color 0.15s ease;
+}
+
+.discover-close:hover {
+  border-color: var(--amber);
+  color: var(--text);
+}
+
+.discover-coords {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 12px;
+  letter-spacing: 0.3px;
+}
+
+.discover-loading {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--muted);
+  padding: 8px 0;
+  letter-spacing: 0.3px;
+}
+
+.photos-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+  margin-bottom: 12px;
+}
+
+.photo-tile {
+  display: block;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: 2px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+}
+
+.photo-tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: opacity 0.15s ease;
+}
+
+.photo-tile:hover img {
+  opacity: 0.85;
+}
+
+.photos-empty {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-bottom: 12px;
+}

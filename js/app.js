@@ -15,7 +15,7 @@ import { DEBUG_LOCATIONS } from './floorplanGen.js';
 import { parseQuery } from './nlp.js';
 import { computeSuitability } from './score.js';
 import { sunTimes, sunPosition, fmtTime, fmtTimeAt, tzAbbr, compass, geocode, forecast, weatherText, fetchLocationPhotos, fetchPlaceInfo, reverseGeocode } from './intel.js';
-import { ensure3D, resize3D, update3D, flyHome3D, flyToListing3D, setGlobeMode, flyToGlobalView, startGlobeSpin, stopGlobeSpin } from './map3d.js';
+import { ensure3D, resize3D, update3D, flyHome3D, flyToListing3D, setGlobeMode, flyToGlobalView, startGlobeSpin, stopGlobeSpin, showStarfield, hideStarfield } from './map3d.js';
 import { findNaturalFeatures } from './NaturalFeatures.js';
 import { findRealPlaces } from './RealPlaces.js';
 
@@ -857,7 +857,11 @@ async function enterExploreMode() {
   exploreMode = true;
   document.getElementById('explore-toggle')?.classList.add('active');
   await setView('3d', { force: true });
-  setGlobeMode(true);
+  // Wait for the globe projection to actually be applied before flying out
+  // and starting rotation — setGlobeMode defers until style.load if the
+  // style isn't ready yet (fixes "Style is not done loading" error).
+  await setGlobeMode(true);
+  showStarfield();
   flyToGlobalView();
   startGlobeSpin();
 }
@@ -865,6 +869,7 @@ async function enterExploreMode() {
 function exitExploreMode() {
   exploreMode = false;
   document.getElementById('explore-toggle')?.classList.remove('active');
+  hideStarfield();
   stopGlobeSpin();
   setGlobeMode(false);
   closeDiscoverPanel();
