@@ -3,6 +3,11 @@
 // windows and skylights, style-based furnishing, and three camera modes
 // (first-person walk, orbit dollhouse, top-down plan).
 //
+// Walk mode navigates in the style of Google Maps / Street View: click a spot
+// on the floor and the camera walks there along a route planned through the
+// doorways, drag to look around, wheel to zoom the lens. WASD and the arrow
+// keys pivot the view in place — they look, they don't move.
+//
 // In production the geometry here would be replaced by reconstructed meshes
 // (Matterport SDK / Gaussian splats from listing photos); the controls,
 // collision, and UI layer would stay the same.
@@ -35,7 +40,6 @@ RectAreaLightUniformsLib.init();
 const WALL_T = 0.16;
 const DOOR_H = 2.1;
 const EYE = 1.6;
-const CROUCH_EYE = 1.02;
 const TOUR_EXPOSURE = 1.0;
 
 let ctx = null; // active tour context
@@ -43,7 +47,14 @@ let ctx = null; // active tour context
 // Read-only introspection for the debug route and Part 3's FPS overlay —
 // no behavior depends on this, safe to leave in.
 if (typeof window !== 'undefined') {
-  window.__tourDebug = { pos: () => ctx ? { x: ctx.x, z: ctx.z, mode: ctx.mode } : null };
+  window.__tourDebug = {
+    pos: () => ctx ? { x: ctx.x, z: ctx.z, mode: ctx.mode } : null,
+    look: () => {
+      if (!ctx) return null;
+      const d = ctx.camera.getWorldDirection(new THREE.Vector3());
+      return { yaw: ctx.yaw, pitch: ctx.pitch, dir: { x: d.x, y: d.y, z: d.z } };
+    },
+  };
 }
 
 // ---------------------------------------------------------------- utilities
@@ -666,14 +677,8 @@ function buildScene(listing, fp) {
     scene.add(jambs);
   }
 
-  // Collision BVH — a real accelerated structure over the actual wall/jamb
-  // solids (see the collisionGeos.push() calls above), not an approximation
-  // of them. Works unchanged for non-rectangular aggregate footprints or
-  // any future non-axis-aligned geometry, since it's built from the real
-  // meshes rather than per-room bounding boxes.
-  const collisionGeometry = mergeGeometries(collisionGeos, false);
-  collisionGeometry.computeBoundsTree();
-  const collisionBVH = new MeshBVH(collisionGeometry);
+  // (The collision BVH is built further down, once furniture has been placed
+  // — props are solid too, so they have to be in it. See buildCollisionBVH.)
 
   // floors, ceilings, windows, skylights, furniture, labels, room lights
   const winTex = getWindowTexture(preset.windowMullion);
@@ -772,7 +777,13 @@ function buildScene(listing, fp) {
       scene.add(rl);
     }
 
-    furnish(scene, r, listing, rand, preset.furnitureDensity);
+    // Furniture goes into its own group so its solids can be harvested for
+    // the collision BVH below — walking through a couch made every clearance
+    // judgement in the app unreliable, which is the whole point of the twin.
+    const props = new THREE.Group();
+    furnish(props, r, listing, rand, preset.furnitureDensity);
+    scene.add(props);
+    collectPropCollision(props, collisionGeos);
 
     const label = makeLabelSprite(r.name);
     label.position.set(r.x + r.w / 2, Math.min(r.h - 0.35, 2.45), r.z + r.d / 2);
@@ -816,9 +827,49 @@ function buildScene(listing, fp) {
     }
   }
 
+  // Collision BVH — a real accelerated structure over the actual wall, jamb
+  // and furniture solids, not an approximation of them. Built here rather
+  // than before the room loop because furniture is only placed inside it.
+  const collisionGeometry = mergeGeometries(collisionGeos, false);
+  collisionGeometry.computeBoundsTree();
+  const collisionBVH = new MeshBVH(collisionGeometry);
+
   for (const g of collisionGeos) g.dispose();
 
   return { scene, ceilings, bounds: b, collisionBVH, sun };
+}
+
+// ------------------------------------------------- furniture collision
+// Harvests solid, bump-into-able furniture out of a furnished room group as
+// world-space boxes for the collision BVH. Deliberately an AABB per prop
+// rather than the true mesh: you want to be stopped by the couch, not to
+// squeeze between its cushions, and it keeps the BVH cheap.
+//
+// The filters exclude things a person walks under or past rather than into:
+// wall art and mirrors (mounted high), ceiling fixtures and string lights,
+// rugs (no height), and light sprites/labels (not meshes at all).
+const PROP_MIN_FOOTPRINT = 0.03;  // m² — smaller than this is clutter, not an obstacle
+const PROP_MIN_HEIGHT = 0.2;      // m — below this you step over it (rugs, thresholds)
+const PROP_MAX_BASE = 1.3;        // m — above this it's wall/ceiling mounted
+
+const _propBox = new THREE.Box3();
+function collectPropCollision(root, out) {
+  root.updateMatrixWorld(true);
+  root.traverse(o => {
+    if (!o.isMesh || o.isInstancedMesh) return;
+    if (!o.geometry || !o.geometry.attributes || !o.geometry.attributes.position) return;
+    _propBox.setFromObject(o);
+    const sx = _propBox.max.x - _propBox.min.x;
+    const sy = _propBox.max.y - _propBox.min.y;
+    const sz = _propBox.max.z - _propBox.min.z;
+    if (_propBox.min.y > PROP_MAX_BASE) return;
+    if (sy < PROP_MIN_HEIGHT) return;
+    if (sx * sz < PROP_MIN_FOOTPRINT) return;
+    out.push(new THREE.BoxGeometry(sx, sy, sz).translate(
+      (_propBox.min.x + _propBox.max.x) / 2,
+      (_propBox.min.y + _propBox.max.y) / 2,
+      (_propBox.min.z + _propBox.max.z) / 2));
+  });
 }
 
 // ------------------------------------------------------------- collision
@@ -879,21 +930,163 @@ function validateReachability(fp) {
   if (unreachable.length) console.warn('[tour] unreachable from spawn:', unreachable);
 }
 
+// ------------------------------------------------------ click-to-walk nav
+// Google-Maps/Street-View-style navigation: the mouse picks a spot on the
+// floor and the camera walks there. The route is planned through the
+// room-adjacency graph implied by fp.doors rather than making a beeline —
+// a straight line to a point in the next room would grind along the wall
+// between them and can wedge in a corner and never arrive, whereas routing
+// through the doorway is both reachable and what a person would actually do.
+
+const LOOK_YAW_SPEED = 1.7;    // rad/s when holding A/D or left/right
+const LOOK_PITCH_SPEED = 1.25; // rad/s when holding W/S or up/down
+
+const WALK_SPEED = 2.0;      // m/s along the planned path
+const NAV_MIN_DUR = 0.45;    // even a tiny step eases rather than snapping
+const NAV_MAX_DUR = 3.0;     // cap so crossing a huge stage isn't a slog
+const DOOR_APPROACH = 0.55;  // aim this far either side of an opening
+
+function roomIndexAt(fp, x, z) {
+  return fp.rooms.findIndex(r =>
+    x >= r.x && x <= r.x + r.w && z >= r.z && z <= r.z + r.d);
+}
+
+// roomIdx -> Map(neighborIdx -> [entry, middle, exit] waypoints oriented
+// for travel *from* that room, so a path aims squarely through the opening
+// instead of clipping the jamb on a diagonal approach.
+function buildRoomGraph(fp) {
+  const adj = fp.rooms.map(() => new Map());
+  for (const d of fp.doors) {
+    const near = d.dir === 'v'
+      ? { x: d.x - DOOR_APPROACH, z: d.z }
+      : { x: d.x, z: d.z - DOOR_APPROACH };
+    const far = d.dir === 'v'
+      ? { x: d.x + DOOR_APPROACH, z: d.z }
+      : { x: d.x, z: d.z + DOOR_APPROACH };
+    const mid = { x: d.x, z: d.z };
+    const a = roomIndexAt(fp, near.x, near.z);
+    const b = roomIndexAt(fp, far.x, far.z);
+    if (a >= 0 && b >= 0 && a !== b) {
+      adj[a].set(b, [near, mid, far]);
+      adj[b].set(a, [far, mid, near]);
+    }
+  }
+  return adj;
+}
+
+// Breadth-first over rooms; returns the waypoint list (excluding the current
+// position) or null when the target isn't on the floor plan / unreachable.
+function findWalkPath(fp, adj, from, to) {
+  const endRoom = roomIndexAt(fp, to.x, to.z);
+  if (endRoom < 0) return null;
+  const startRoom = roomIndexAt(fp, from.x, from.z);
+  if (startRoom < 0 || startRoom === endRoom) return [{ x: to.x, z: to.z }];
+
+  const prev = new Map([[startRoom, -1]]);
+  const queue = [startRoom];
+  while (queue.length) {
+    const cur = queue.shift();
+    if (cur === endRoom) break;
+    for (const nb of adj[cur].keys()) {
+      if (!prev.has(nb)) { prev.set(nb, cur); queue.push(nb); }
+    }
+  }
+  if (!prev.has(endRoom)) return null;
+
+  const chain = [];
+  for (let r = endRoom; r !== -1; r = prev.get(r)) chain.unshift(r);
+  const pts = [];
+  for (let i = 0; i < chain.length - 1; i++) {
+    const gate = adj[chain[i]].get(chain[i + 1]);
+    if (gate) pts.push(...gate);
+  }
+  pts.push({ x: to.x, z: to.z });
+  return pts;
+}
+
+// Begins a glide to (tx, tz). Returns false when there's nowhere to go, so
+// the caller can leave the click as a no-op rather than starting a null move.
+function startNav(tx, tz) {
+  const pts = findWalkPath(ctx.fp, ctx.roomGraph, { x: ctx.x, z: ctx.z }, { x: tx, z: tz });
+  if (!pts || !pts.length) return false;
+
+  const full = [{ x: ctx.x, z: ctx.z }, ...pts];
+  const cum = [0];
+  for (let i = 1; i < full.length; i++) {
+    cum.push(cum[i - 1] + Math.hypot(full[i].x - full[i - 1].x, full[i].z - full[i - 1].z));
+  }
+  const total = cum[cum.length - 1];
+  if (total < 0.05) return false;
+
+  ctx.nav = {
+    pts: full, cum, total, elapsed: 0, traveled: 0,
+    duration: Math.min(NAV_MAX_DUR, Math.max(NAV_MIN_DUR, total / WALK_SPEED)),
+  };
+  return true;
+}
+
+// Position at arc-length s along the planned polyline.
+function pointAtArc(nav, s) {
+  const { pts, cum } = nav;
+  if (s <= 0) return { x: pts[0].x, z: pts[0].z };
+  for (let i = 1; i < cum.length; i++) {
+    if (s <= cum[i]) {
+      const segLen = cum[i] - cum[i - 1] || 1;
+      const f = (s - cum[i - 1]) / segLen;
+      return {
+        x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * f,
+        z: pts[i - 1].z + (pts[i].z - pts[i - 1].z) * f,
+      };
+    }
+  }
+  const last = pts[pts.length - 1];
+  return { x: last.x, z: last.z };
+}
+
+// The floor target marker — a flat ring that follows the cursor across the
+// floor, the way Street View shows where a click will take you. depthWrite
+// is off (it never occludes scene geometry) but depth *testing* stays on so
+// walls correctly hide targets in rooms you can't see into.
+function makeReticle() {
+  const g = new THREE.Group();
+  const mk = (geo) => new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    color: '#5aa7e8', transparent: true, opacity: 0.9, depthWrite: false,
+  }));
+  const ring = mk(new THREE.RingGeometry(0.3, 0.4, 36));
+  const dot = mk(new THREE.CircleGeometry(0.075, 20));
+  ring.rotation.x = dot.rotation.x = -Math.PI / 2;
+  dot.position.y = 0.001;
+  g.add(ring, dot);
+  g.position.y = 0.03;      // clear of the floor plane, avoids z-fighting
+  g.visible = false;
+  g.renderOrder = 2;
+  g.setColor = (hex) => {
+    if (g.userData.color === hex) return;   // material writes aren't free per frame
+    g.userData.color = hex;
+    ring.material.color.set(hex);
+    dot.material.color.set(hex);
+  };
+  return g;
+}
+
 // --------------------------------------------------------------- controls
 
-// True pointer-lock mouselook in walk mode (click to lock, mouse moves the
-// view with no button held, matching a real first-person game rather than
-// the old click-and-drag-to-look) — dollhouse/floor-plan modes keep the
-// previous drag-to-orbit behavior since pointer lock doesn't make sense
-// for an orbit camera. Falls back to drag-to-look automatically wherever
-// requestPointerLock isn't available (some mobile browsers) or is denied.
+// Mouse-only navigation, matching Google Maps / Street View: drag to look,
+// click the floor to walk there, wheel to zoom the lens. Deliberately no
+// pointer lock and no WASD — pointer lock hides the cursor, which is exactly
+// what a click-to-move interface needs to show. Dollhouse/floor-plan modes
+// keep their drag-to-orbit behavior.
 function setupControls(dom) {
   const st = {
     keys: new Set(),
     dragging: false, lastX: 0, lastY: 0,
     pinchDist: 0,
   };
+  const LOOK_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
   st.onKeyDown = (e) => {
+    // Stop the arrows scrolling the page behind the tour overlay. Must run
+    // before the repeat guard, since autorepeat fires its own events.
+    if (LOOK_KEYS.has(e.code)) e.preventDefault();
     if (e.repeat) return;
     st.keys.add(e.code);
     if (e.code === 'Escape') { if (ctx && ctx.measure.on) toggleMeasure(); else closeTour(); return; }
@@ -912,41 +1105,49 @@ function setupControls(dom) {
 
   st.onPointerDown = (e) => {
     if (ctx && ctx.mode === 'fly') { setMode('walk'); return; }
-    if (ctx && ctx.mode === 'walk' && dom.requestPointerLock) {
-      if (document.pointerLockElement !== dom) { dom.requestPointerLock(); return; }
-      // Already locked and the tour is in measure mode — a click here is a
-      // measurement point, raycast from the crosshair (screen center) since
-      // the OS cursor is hidden/frozen under lock, not from e.clientX/Y.
-      if (ctx.measure.on) measureAt(dom.clientWidth / 2, dom.clientHeight / 2, dom);
-      return;
-    }
     st.dragging = true; st.lastX = st.downX = e.clientX; st.lastY = st.downY = e.clientY; st.moved = 0;
+    dom.style.cursor = 'grabbing';
     try { dom.setPointerCapture(e.pointerId); } catch { /* synthetic events */ }
   };
   st.onPointerUp = (e) => {
+    const wasDragging = st.dragging;
     st.dragging = false;
-    if (ctx && ctx.measure.on && ctx.mode === 'walk' && document.pointerLockElement !== dom && st.moved < 6) {
-      measureAt(e.clientX, e.clientY, dom);
+    if (!ctx) return;
+    ctx.pointer = { x: e.clientX, y: e.clientY };
+    // A click is a press that didn't turn into a drag. In walk mode that
+    // means "walk here"; while measuring it drops a measurement point.
+    if (wasDragging && st.moved < 6 && ctx.mode === 'walk') {
+      if (ctx.measure.on) measureAt(e.clientX, e.clientY, dom);
+      else {
+        const hit = pickSurface(e.clientX, e.clientY, dom);
+        if (hitIsStandable(hit)) startNav(hit.point.x, hit.point.z);
+      }
     }
   };
   st.onPointerMove = (e) => {
     if (!ctx) return;
-    if (ctx.mode === 'walk' && document.pointerLockElement === dom) {
-      ctx.yaw -= e.movementX * 0.0022;
-      ctx.pitch = Math.max(-1.35, Math.min(1.35, ctx.pitch - e.movementY * 0.0022));
+    if (st.dragging) {
+      const dx = e.clientX - st.lastX, dy = e.clientY - st.lastY;
+      st.lastX = e.clientX; st.lastY = e.clientY;
+      st.moved += Math.abs(dx) + Math.abs(dy);
+      if (ctx.mode === 'walk') {
+        ctx.yaw -= dx * 0.0032;
+        ctx.pitch = Math.max(-1.35, Math.min(1.35, ctx.pitch - dy * 0.0032));
+        // Looking around by hand overrides the walk's automatic turn-to-face
+        // for the rest of this move, so the camera never fights the user.
+        if (ctx.nav) ctx.nav.freeLook = true;
+      } else {
+        ctx.orbitTheta -= dx * 0.005;
+        ctx.orbitPhi = Math.max(0.12, Math.min(1.45, ctx.orbitPhi - dy * 0.004));
+      }
       return;
     }
-    if (!st.dragging) return;
-    const dx = e.clientX - st.lastX, dy = e.clientY - st.lastY;
-    st.lastX = e.clientX; st.lastY = e.clientY;
-    st.moved += Math.abs(dx) + Math.abs(dy);
-    if (ctx.mode === 'walk') {
-      ctx.yaw -= dx * 0.0032;
-      ctx.pitch = Math.max(-1.35, Math.min(1.35, ctx.pitch - dy * 0.0032));
-    } else {
-      ctx.orbitTheta -= dx * 0.005;
-      ctx.orbitPhi = Math.max(0.12, Math.min(1.45, ctx.orbitPhi - dy * 0.004));
-    }
+    // Just record where the cursor is; the render loop does the picking so
+    // the raycast runs at most once a frame instead of once an event.
+    ctx.pointer = { x: e.clientX, y: e.clientY };
+  };
+  st.onPointerLeave = () => {
+    if (ctx) { ctx.pointer = null; ctx.hover = null; }
   };
   st.onWheel = (e) => {
     e.preventDefault();
@@ -957,17 +1158,13 @@ function setupControls(dom) {
       ctx.orbitR = Math.max(4, Math.min(90, ctx.orbitR * (1 + e.deltaY * 0.0012)));
     }
   };
-  st.onPointerLockChange = () => {
-    document.getElementById('tour-help').textContent =
-      (ctx && ctx.mode === 'walk') ? walkHelp() : '';
-  };
   window.addEventListener('keydown', st.onKeyDown);
   window.addEventListener('keyup', st.onKeyUp);
   dom.addEventListener('pointerdown', st.onPointerDown);
   dom.addEventListener('pointerup', st.onPointerUp);
   dom.addEventListener('pointermove', st.onPointerMove);
+  dom.addEventListener('pointerleave', st.onPointerLeave);
   dom.addEventListener('wheel', st.onWheel, { passive: false });
-  document.addEventListener('pointerlockchange', st.onPointerLockChange);
   return st;
 }
 
@@ -977,9 +1174,8 @@ function teardownControls(st, dom) {
   dom.removeEventListener('pointerdown', st.onPointerDown);
   dom.removeEventListener('pointerup', st.onPointerUp);
   dom.removeEventListener('pointermove', st.onPointerMove);
+  dom.removeEventListener('pointerleave', st.onPointerLeave);
   dom.removeEventListener('wheel', st.onWheel);
-  document.removeEventListener('pointerlockchange', st.onPointerLockChange);
-  if (document.pointerLockElement === dom) document.exitPointerLock();
 }
 
 // ---------------------------------------------------------------- minimap
@@ -1130,17 +1326,20 @@ export function openTour(listing, opts = {}) {
     quality: 'high', showFPS: false, fpsAccum: 0, fpsFrames: 0, fpsLastUpdate: performance.now(),
     mode: 'walk',
     x: spawnRoom.x + spawnRoom.w / 2, z: spawnRoom.z + spawnRoom.d / 2,
-    yaw: Math.PI * 0.75, pitch: 0, fov: 70,
-    vel: { x: 0, z: 0 }, crouch: false,
+    yaw: Math.PI * 0.75, pitch: 0, fov: 70, eye: EYE,
+    lookVel: { yaw: 0, pitch: 0 },
+    roomGraph: buildRoomGraph(fp), nav: null, hover: null, pointer: null, reticle: makeReticle(),
     orbitTheta: -0.7, orbitPhi: 0.9, orbitR: Math.max(bounds.w, bounds.d) * 1.25,
     fly: null, flyPath: buildFlyPath(fp, bounds),
     measure: { on: false, pts: [], group: new THREE.Group(), ray: new THREE.Raycaster() },
     raf: 0, lastT: performance.now(),
   };
   scene.add(ctx.measure.group);
+  scene.add(ctx.reticle);
   applyQuality(ctx.quality);
 
-  // room jump chips
+  // Room chips walk you there rather than teleporting, so you keep your
+  // bearings — same routing (and doorways) as clicking the floor.
   const roomsBar = document.getElementById('tour-rooms');
   roomsBar.innerHTML = '';
   for (const r of fp.rooms) {
@@ -1148,7 +1347,7 @@ export function openTour(listing, opts = {}) {
     btn.textContent = r.name;
     btn.onclick = () => {
       setMode('walk');
-      ctx.x = r.x + r.w / 2; ctx.z = r.z + r.d / 2;
+      startNav(r.x + r.w / 2, r.z + r.d / 2);
     };
     roomsBar.appendChild(btn);
   }
@@ -1249,20 +1448,74 @@ function addMeasurePoint(worldPt) {
   }
 }
 function walkHelp() {
-  return document.pointerLockElement
-    ? 'Mouse to look · WASD to move · Shift run · C crouch · M measure · B bloom · F AA · Q quality · P fps · Esc exit'
-    : 'Click to look around · WASD to move · Esc exit';
+  return 'Click the floor to walk there · Drag or WASD / arrows to look around · Scroll to zoom lens · Esc to exit';
 }
 
-const GROUND_PLANE = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-function measureAt(clientX, clientY, dom) {
+// Picks the nearest real surface under the cursor. Previously this
+// intersected an infinite y=0 plane, which meant the ray sailed straight
+// through walls: you could measure a point in the next room, or target a
+// room you couldn't see. Raycasting the actual scene stops at the first
+// solid, and — because the hit is a true 3D point — also makes vertical
+// measurement (ceiling height, window height) possible at all.
+const _ndc = new THREE.Vector2();
+const _hitNormal = new THREE.Vector3();
+
+function pickSurface(clientX, clientY, dom) {
   const rect = dom.getBoundingClientRect();
-  const ndc = new THREE.Vector2(
+  _ndc.set(
     ((clientX - rect.left) / rect.width) * 2 - 1,
     -((clientY - rect.top) / rect.height) * 2 + 1);
-  ctx.measure.ray.setFromCamera(ndc, ctx.camera);
-  const hit = new THREE.Vector3();
-  if (ctx.measure.ray.ray.intersectPlane(GROUND_PLANE, hit)) addMeasurePoint(hit);
+  const ray = ctx.measure.ray;
+  ray.setFromCamera(_ndc, ctx.camera);
+  for (const hit of ray.intersectObject(ctx.scene, true)) {
+    const o = hit.object;
+    if (o.isSprite || !o.isMesh) continue;          // labels aren't surfaces
+    let node = o, skip = false;
+    while (node) {
+      // the cursor's own marker and existing measurement pins aren't scenery
+      if (node === ctx.reticle || node === ctx.measure.group || node.visible === false) { skip = true; break; }
+      node = node.parent;
+    }
+    if (skip) continue;
+    return hit;
+  }
+  return null;
+}
+
+// Is this hit a bit of floor you could actually stand on (rather than a
+// wall, a worktop, or the roof of something)?
+function hitIsStandable(hit) {
+  if (!hit || hit.point.y > 0.3) return false;
+  if (hit.face) {
+    _hitNormal.copy(hit.face.normal).transformDirection(hit.object.matrixWorld);
+    if (_hitNormal.y < 0.5) return false;
+  }
+  return roomIndexAt(ctx.fp, hit.point.x, hit.point.z) >= 0;
+}
+
+// Resolve what's under the cursor. Runs once per frame from the render loop
+// off the last pointer position rather than on every pointermove event,
+// which naturally throttles the raycast to the frame rate.
+function updateHover() {
+  const dom = ctx.renderer.domElement;
+  if (ctx.mode !== 'walk' || ctx.measure.on || !ctx.pointer || ctx.controls.dragging) {
+    ctx.hover = null;
+    if (ctx.mode !== 'walk') dom.style.cursor = 'move';
+    else if (ctx.measure.on) dom.style.cursor = 'crosshair';
+    else if (ctx.controls.dragging) dom.style.cursor = 'grabbing';
+    return;
+  }
+  const hit = pickSurface(ctx.pointer.x, ctx.pointer.y, dom);
+  if (!hitIsStandable(hit)) { ctx.hover = null; dom.style.cursor = 'grab'; return; }
+  // Reachable? A spot behind a locked-off wall shouldn't look clickable.
+  const path = findWalkPath(ctx.fp, ctx.roomGraph, { x: ctx.x, z: ctx.z }, { x: hit.point.x, z: hit.point.z });
+  ctx.hover = { x: hit.point.x, z: hit.point.z, blocked: !path };
+  dom.style.cursor = path ? 'pointer' : 'not-allowed';
+}
+
+function measureAt(clientX, clientY, dom) {
+  const hit = pickSurface(clientX, clientY, dom);
+  if (hit) addMeasurePoint(hit.point.clone());
 }
 
 function setMode(mode) {
@@ -1270,7 +1523,8 @@ function setMode(mode) {
   ctx.mode = mode;
   ctx.ceilings.visible = (mode === 'walk' || mode === 'fly');
   if (mode !== 'walk' && ctx.measure.on) toggleMeasure();
-  if (mode !== 'walk' && document.pointerLockElement === ctx.renderer.domElement) document.exitPointerLock();
+  if (mode !== 'walk') { ctx.nav = null; ctx.hover = null; ctx.reticle.visible = false; }
+  ctx.renderer.domElement.style.cursor = mode === 'walk' ? 'grab' : 'move';
   document.querySelectorAll('#tour-modes button').forEach(b =>
     b.classList.toggle('active', b.dataset.mode === mode));
   document.getElementById('tour-minimap').style.display = mode === 'walk' ? 'block' : 'none';
@@ -1316,50 +1570,84 @@ function loop() {
   }
 
   if (ctx.mode === 'walk') {
+    // Keyboard look — WASD and the arrows pivot the camera in place (W/S
+    // up-down, A/D left-right); they deliberately don't translate, since
+    // moving is the mouse's job. Rate is eased in and out so holding a key
+    // starts and stops as a glide rather than a snap.
     const k = controls.keys;
-    ctx.crouch = k.has('KeyC') || k.has('ControlLeft');
-    const run = (k.has('ShiftLeft') || k.has('ShiftRight')) && !ctx.crouch ? 2 : ctx.crouch ? 0.55 : 1;
-    let mx = 0, mz = 0;
-    if (k.has('KeyW') || k.has('ArrowUp')) mz -= 1;
-    if (k.has('KeyS') || k.has('ArrowDown')) mz += 1;
-    if (k.has('KeyA') || k.has('ArrowLeft')) mx -= 1;
-    if (k.has('KeyD') || k.has('ArrowRight')) mx += 1;
-    if (k.has('KeyQ')) ctx.yaw += 1.8 * dt;
-    if (k.has('KeyE')) ctx.yaw -= 1.8 * dt;
-    // desired velocity in world space, smoothed for gentle accel/decel
-    let tvx = 0, tvz = 0;
-    if (mx || mz) {
-      const len = Math.hypot(mx, mz); mx /= len; mz /= len;
-      const sin = Math.sin(ctx.yaw), cos = Math.cos(ctx.yaw);
-      const sp = 3.2 * run;
-      tvx = (mx * cos - mz * sin) * sp;
-      tvz = (mx * sin + mz * cos) * sp;
+    let wantYaw = 0, wantPitch = 0;
+    if (k.has('KeyA') || k.has('ArrowLeft')) wantYaw += 1;   // +yaw looks left
+    if (k.has('KeyD') || k.has('ArrowRight')) wantYaw -= 1;
+    if (k.has('KeyW') || k.has('ArrowUp')) wantPitch += 1;   // +pitch looks up
+    if (k.has('KeyS') || k.has('ArrowDown')) wantPitch -= 1;
+
+    const lookSmooth = 1 - Math.pow(0.0001, dt); // frame-rate independent
+    const lv = ctx.lookVel;
+    lv.yaw += (wantYaw * LOOK_YAW_SPEED - lv.yaw) * lookSmooth;
+    lv.pitch += (wantPitch * LOOK_PITCH_SPEED - lv.pitch) * lookSmooth;
+    if (Math.abs(lv.yaw) > 1e-4 || Math.abs(lv.pitch) > 1e-4) {
+      ctx.yaw += lv.yaw * dt;
+      ctx.pitch = Math.max(-1.35, Math.min(1.35, ctx.pitch + lv.pitch * dt));
+      // Same rule as dragging: steering by hand takes the wheel off the
+      // walk's automatic turn-to-face for the rest of the move.
+      if (ctx.nav && (wantYaw || wantPitch)) ctx.nav.freeLook = true;
     }
-    const smooth = 1 - Math.pow(0.0025, dt); // frame-rate independent lerp
-    ctx.vel.x += (tvx - ctx.vel.x) * smooth;
-    ctx.vel.z += (tvz - ctx.vel.z) * smooth;
-    const wx = ctx.vel.x * dt, wz = ctx.vel.z * dt;
-    const wantX = ctx.x + wx, wantZ = ctx.z + wz;
-    const resolved = resolveCollision(ctx.collisionBVH, wantX, wantZ, ctx.eye ?? EYE);
-    // Bleed velocity on the axis a wall actually blocked, rather than
-    // zeroing both — keeps sliding along a wall you're moving into at an
-    // angle instead of stopping dead.
-    if (Math.abs(resolved.x - wantX) > 1e-4) ctx.vel.x *= 0.15;
-    if (Math.abs(resolved.z - wantZ) > 1e-4) ctx.vel.z *= 0.15;
-    ctx.x = resolved.x; ctx.z = resolved.z;
 
-    const eye = ctx.crouch ? CROUCH_EYE : EYE;
-    ctx.eye = (ctx.eye ?? EYE) + (eye - (ctx.eye ?? EYE)) * Math.min(1, dt * 10);
+    // Follow the planned path. Progress is eased over the whole route
+    // (smootherstep, so both velocity and acceleration start and end at
+    // zero) — that's what makes arrivals settle instead of stopping dead.
+    let speed = 0;
+    if (ctx.nav) {
+      const nav = ctx.nav;
+      nav.elapsed += dt;
+      const u = Math.min(1, nav.elapsed / nav.duration);
+      const eased = u * u * u * (u * (6 * u - 15) + 10);
+      const s = eased * nav.total;
+      speed = dt > 0 ? (s - nav.traveled) / dt : 0;
+      nav.traveled = s;
 
-    // Head-bob: phase advances with distance actually traveled (not just
-    // time), so it's tied to footsteps rather than ticking while stationary.
-    // Amplitude fades in/out with speed so it's imperceptible standing
-    // still and subtle even at a full sprint — a wobble, not seasickness.
-    const speed = Math.hypot(ctx.vel.x, ctx.vel.z);
-    const speedFrac = Math.min(1, speed / 4.5);
+      const p = pointAtArc(nav, s);
+      const resolved = resolveCollision(ctx.collisionBVH, p.x, p.z, EYE);
+      ctx.x = resolved.x; ctx.z = resolved.z;
+
+      // Turn to face the way we're walking, unless the user grabbed the
+      // view mid-move. Tiny hops don't bother turning at all.
+      if (!nav.freeLook && nav.total > 0.8) {
+        const ahead = pointAtArc(nav, Math.min(nav.total, s + 0.4));
+        const dx = ahead.x - p.x, dz = ahead.z - p.z;
+        if (Math.hypot(dx, dz) > 1e-4) {
+          // Camera forward at yaw is (-sin yaw, -cos yaw) — verified against
+          // camera.getWorldDirection(), not assumed. Solving that for the
+          // travel vector gives yaw = atan2(-dx, -dz).
+          let diff = Math.atan2(-dx, -dz) - ctx.yaw;
+          diff = Math.atan2(Math.sin(diff), Math.cos(diff)); // shortest way round
+          ctx.yaw += diff * (1 - Math.pow(0.02, dt));
+        }
+      }
+      if (u >= 1) ctx.nav = null;
+    }
+    ctx.eye = EYE;
+
+    // Head-bob keyed to distance actually covered, so it reads as footsteps
+    // rather than ticking while stationary. Kept subtle — enough to feel
+    // like walking, not enough to notice as an effect.
+    const speedFrac = Math.min(1, speed / 2.5);
     ctx.bobPhase = (ctx.bobPhase ?? 0) + speed * dt * 1.8;
-    const bobY = speedFrac > 0.02 ? Math.abs(Math.sin(ctx.bobPhase)) * 0.028 * speedFrac : 0;
-    const bobX = speedFrac > 0.02 ? Math.sin(ctx.bobPhase * 0.5) * 0.018 * speedFrac : 0;
+    const bobY = speedFrac > 0.02 ? Math.abs(Math.sin(ctx.bobPhase)) * 0.022 * speedFrac : 0;
+    const bobX = speedFrac > 0.02 ? Math.sin(ctx.bobPhase * 0.5) * 0.014 * speedFrac : 0;
+
+    // Resolve what's under the cursor, then park the floor target there with
+    // a slow pulse so it reads as interactive. Unreachable spots still show a
+    // marker, but in red — silently showing nothing looked like a dead app.
+    updateHover();
+    const ret = ctx.reticle;
+    ret.visible = !!ctx.hover && !ctx.nav;
+    if (ret.visible) {
+      ret.position.set(ctx.hover.x, 0.03, ctx.hover.z);
+      const pulse = 1 + Math.sin(now * 0.004) * 0.07;
+      ret.scale.set(pulse, pulse, pulse);
+      ret.setColor(ctx.hover.blocked ? '#e0603f' : '#5aa7e8');
+    }
 
     camera.position.set(ctx.x, ctx.eye + bobY, ctx.z);
     camera.rotation.set(ctx.pitch, ctx.yaw, 0);
