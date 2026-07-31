@@ -7,44 +7,50 @@
 // TYPE_DEFAULT_PRESET/TAG_PRESET_HINTS rule — nothing in tour.js changes.
 
 const PRESETS = {
+  // Intensities tuned down from the original pass — combined with the sun/
+  // hemi/environment/RectAreaLight/point-light all contributing at once,
+  // the original numbers blew highlights out to solid white (worst from
+  // the top-down dollhouse/floor-plan angle where a lot of that light is
+  // visible simultaneously). These read correctly against the reduced
+  // per-room fill light and raised bloom threshold set alongside this.
   midCenturyResidential: {
     label: 'Mid-Century Residential',
-    lightTempK: 3200, sunIntensity: 1.9, hemiIntensity: 0.9,
+    lightTempK: 3200, sunIntensity: 1.3, hemiIntensity: 0.6,
     wallFinish: { roughness: 0.85, metalness: 0.02 },
     floorFinish: { roughness: 0.4, metalness: 0.04 },
     windowMullion: 'grid', furnitureDensity: 1.0,
   },
   contemporaryResidential: {
     label: 'Contemporary Residential',
-    lightTempK: 4200, sunIntensity: 2.1, hemiIntensity: 1.0,
+    lightTempK: 4200, sunIntensity: 1.4, hemiIntensity: 0.65,
     wallFinish: { roughness: 0.92, metalness: 0.0 },
     floorFinish: { roughness: 0.55, metalness: 0.02 },
     windowMullion: 'minimal', furnitureDensity: 0.9,
   },
   commercialOffice: {
     label: 'Commercial / Office',
-    lightTempK: 4800, sunIntensity: 1.6, hemiIntensity: 1.1,
+    lightTempK: 4800, sunIntensity: 1.1, hemiIntensity: 0.7,
     wallFinish: { roughness: 0.95, metalness: 0.0 },
     floorFinish: { roughness: 0.7, metalness: 0.05 },
     windowMullion: 'curtainWall', furnitureDensity: 0.7,
   },
   industrial: {
     label: 'Industrial',
-    lightTempK: 3800, sunIntensity: 2.4, hemiIntensity: 0.85,
+    lightTempK: 3800, sunIntensity: 1.6, hemiIntensity: 0.55,
     wallFinish: { roughness: 0.75, metalness: 0.15 },
     floorFinish: { roughness: 0.5, metalness: 0.12 },
     windowMullion: 'steelSash', furnitureDensity: 0.6,
   },
   hospitality: {
     label: 'Hospitality',
-    lightTempK: 2900, sunIntensity: 1.7, hemiIntensity: 1.0,
+    lightTempK: 2900, sunIntensity: 1.15, hemiIntensity: 0.65,
     wallFinish: { roughness: 0.7, metalness: 0.05 },
     floorFinish: { roughness: 0.3, metalness: 0.02 },
     windowMullion: 'grid', furnitureDensity: 1.1,
   },
   default: {
     label: 'Default',
-    lightTempK: 3800, sunIntensity: 1.9, hemiIntensity: 0.95,
+    lightTempK: 3800, sunIntensity: 1.3, hemiIntensity: 0.6,
     wallFinish: { roughness: 0.88, metalness: 0.02 },
     floorFinish: { roughness: 0.6, metalness: 0.03 },
     windowMullion: 'grid', furnitureDensity: 0.85,

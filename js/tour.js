@@ -36,7 +36,7 @@ const WALL_T = 0.16;
 const DOOR_H = 2.1;
 const EYE = 1.6;
 const CROUCH_EYE = 1.02;
-const TOUR_EXPOSURE = 1.3;
+const TOUR_EXPOSURE = 1.0;
 
 let ctx = null; // active tour context
 
@@ -141,7 +141,12 @@ function applyDoors(segments, doors) {
 // ------------------------------------------------------------ mesh helpers
 
 function mat(color, opts = {}) {
-  return new THREE.MeshStandardMaterial({ color, roughness: 0.88, metalness: 0.02, ...opts });
+  // envMapIntensity default is 1.0 in three.js, which stacks the PMREM
+  // environment fully on top of direct lighting — on light preset colors
+  // (near-white walls) that was blowing highlights out to solid white.
+  // Kept subtle here since it's still contributing real reflections, just
+  // not doubling as a second light source.
+  return new THREE.MeshStandardMaterial({ color, roughness: 0.88, metalness: 0.02, envMapIntensity: 0.35, ...opts });
 }
 
 function addBox(group, w, h, d, material, x, y, z, rotY = 0, shadows = true) {
@@ -742,7 +747,7 @@ function buildScene(listing, fp) {
 
       if (windowLightsUsed < WINDOW_LIGHT_BUDGET) {
         windowLightsUsed++;
-        const rl = new THREE.RectAreaLight(colorTempToHex(6500), 3.2, W * 0.9, H * 0.9);
+        const rl = new THREE.RectAreaLight(colorTempToHex(6500), 1.8, W * 0.9, H * 0.9);
         rl.position.z = -0.05;
         rl.rotation.y = Math.PI; // RectAreaLight emits along -Z of its local frame
         group.add(rl);
@@ -755,9 +760,14 @@ function buildScene(listing, fp) {
       for (let i = 0; i < count; i++) winPlane(wall, i, count);
     }
 
-    // per-room fill light
+    // per-room fill light — kept deliberately subtle now that windows carry
+    // real illumination via RectAreaLight (Part 1); this was tuned as the
+    // *only* light source before that existed, and left at that intensity
+    // it was double-lighting every room and blowing highlights out to
+    // solid white, worst from the top-down dollhouse/floor-plan angle
+    // where many rooms' fill lights are all visible at once.
     if (!r.open) {
-      const rl = new THREE.PointLight('#fff1e0', Math.min(60, 12 + r.w * r.d * 0.5), 0, 2);
+      const rl = new THREE.PointLight('#fff1e0', Math.min(20, 5 + r.w * r.d * 0.18), 0, 2);
       rl.position.set(r.x + r.w / 2, r.h - 0.4, r.z + r.d / 2);
       scene.add(rl);
     }
@@ -1057,7 +1067,11 @@ function buildComposer(renderer, scene, camera, wrap) {
   const composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
 
-  const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.35, 0.55, 0.86);
+  // threshold raised well above typical wall/floor brightness so bloom
+  // only catches genuinely bright things (windows, fixtures), not every
+  // lit surface in the room — at 0.86 it was blooming normal walls,
+  // producing the washed-out/glowing look.
+  const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.18, 0.45, 1.15);
   composer.addPass(bloom);
 
   const fxaa = new ShaderPass(FXAAShader);
