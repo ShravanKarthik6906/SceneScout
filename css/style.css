@@ -49,14 +49,14 @@
 }
 
 :root {
-  --bg: #0b0d0d;
-  --panel: #131515;
-  --panel-2: #181b1b;
-  --line: #232626;
-  --text: #edeae0;
-  --muted: #8a8782;
-  --amber: #c9962b;
-  --teal: #3e6e6a;
+  --bg: #0a0d12;
+  --panel: #111620;
+  --panel-2: #161c28;
+  --line: #232b38;
+  --text: #e9edf3;
+  --muted: #8590a3;
+  --amber: #5aa7e8;
+  --teal: #4a6fa0;
   --grain-opacity: 0.05;
   --letterbox: 28px;
   --font-display: 'Archivo Narrow', 'Arial Narrow', sans-serif;
@@ -189,7 +189,7 @@ header {
   border-radius: 50%;
   background:
     radial-gradient(circle at 35% 32%, rgba(255, 255, 255, 0.4), transparent 42%),
-    radial-gradient(circle, #0b0d0d 28%, var(--amber) 64%, #0b0d0d 70%, transparent 74%);
+    radial-gradient(circle, #0a0d12 28%, var(--amber) 64%, #0a0d12 70%, transparent 74%);
 }
 
 .logo em {
@@ -348,7 +348,7 @@ header .spacer {
 
 #map-toggle button.active {
   background: var(--amber);
-  color: #0b0d0d;
+  color: #0a0d12;
   font-weight: 700;
 }
 
@@ -375,7 +375,7 @@ header .spacer {
 
 #basemap-toggle.active {
   background: var(--teal);
-  color: #0b0d0d;
+  color: #0a0d12;
   border-color: var(--teal);
   font-weight: 700;
 }
@@ -508,7 +508,7 @@ header .spacer {
   font-family: var(--font-display);
   justify-self: end;
   background: var(--amber);
-  color: #0b0d0d;
+  color: #0a0d12;
   font-weight: 700;
   letter-spacing: 0.8px;
   text-transform: uppercase;
@@ -1037,7 +1037,7 @@ input[type="range"] {
 .btn.primary {
   background: var(--amber);
   border-color: var(--amber);
-  color: #0b0d0d;
+  color: #0a0d12;
 }
 
 .btn.primary:hover {
@@ -1133,7 +1133,7 @@ input[type="range"] {
 
 #tour-modes button.active {
   background: var(--amber);
-  color: #0b0d0d;
+  color: #0a0d12;
   font-weight: 700;
 }
 

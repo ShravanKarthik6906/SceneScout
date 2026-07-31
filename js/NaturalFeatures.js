@@ -183,7 +183,7 @@ function buildNaturalFeatureLocation({ id, name, lat, lng, neighborhood, wikiped
         type: slugify(feature.label),   // dynamic — not in catalog.js's TYPES
         _icon: feature.icon || '📍',
         _label: feature.label,
-        _color: '#3e6e6a',
+        _color: '#4a6fa0',
         lat, lng,
         address: `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
         neighborhood: neighborhood || 'Unincorporated area',
