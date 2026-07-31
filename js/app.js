@@ -19,6 +19,21 @@ import { ensure3D, resize3D, update3D, flyHome3D, flyToListing3D, setGlobeMode, 
 import { findNaturalFeatures } from './NaturalFeatures.js';
 import { findRealPlaces } from './RealPlaces.js';
 
+// Line-art replacements for the OS emoji on the location-type filter chips
+// only (map markers and result cards still use TYPES[key].icon elsewhere) —
+// currentColor so each icon inherits the chip's own text color across its
+// default/hover/active states instead of carrying its own fixed tint.
+const CHIP_ICON_SVG = {
+  studio: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10.5l5-3v9l-5-3z"/></svg>',
+  loft: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="1"/><line x1="12" y1="4" x2="12" y2="20"/><line x1="4" y1="12" x2="20" y2="12"/></svg>',
+  warehouse: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V10l9-6 9 6v11"/><path d="M9 21v-6h6v6"/></svg>',
+  house: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11.5L12 5l8 6.5"/><path d="M6 10v10h12V10"/></svg>',
+  rooftop: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14.5l8-6 8 6"/><path d="M3 20.5h18"/><line x1="7" y1="20.5" x2="7" y2="16"/><line x1="17" y1="20.5" x2="17" y2="16"/></svg>',
+  storefront: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5l1.2-5.5h15.6l1.2 5.5"/><path d="M4 9.5V20h16V9.5"/><path d="M9.5 20v-6h5v6"/></svg>',
+  gallery: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="14" rx="1"/><circle cx="8.2" cy="9.2" r="1.4"/><path d="M3.5 16l5-4.5 3.5 3 3.5-3 4.5 4"/></svg>',
+  estate: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5L12 4l8 5.5"/><path d="M4 20.5h16"/><line x1="6.5" y1="20.5" x2="6.5" y2="10.5"/><line x1="11" y1="20.5" x2="11" y2="10.5"/><line x1="15.5" y1="20.5" x2="15.5" y2="10.5"/></svg>',
+};
+
 // Building types for which real-world results can be pulled from
 // Foursquare's Places API in addition to the curated catalog. Not every
 // catalog type maps cleanly onto a real, searchable business category
@@ -100,7 +115,23 @@ function setImmersive(reason, active) {
   const on = immersiveReasons.size > 0;
   document.getElementById('letterbox-top')?.classList.toggle('retracted', on);
   document.getElementById('letterbox-bottom')?.classList.toggle('retracted', on);
+  // #filmstrip's CSS keys its bottom offset off this too, so it collapses
+  // back down flush with the viewport in lockstep with the bars retracting,
+  // instead of leaving a stale gap where the (now invisible) bar used to be.
+  document.body.classList.toggle('immersive', on);
 }
+
+// --header-h drives both the top letterbox's offset (so it starts below the
+// header, not over it) and #layout/#sidebar's height math. The header's
+// real height isn't a constant — its wordmark+tagline row wraps to extra
+// lines at narrow widths — so track it live instead of trusting the :root
+// fallback to stay accurate at every viewport.
+function syncHeaderHeight() {
+  const header = document.querySelector('header');
+  if (!header) return;
+  document.documentElement.style.setProperty('--header-h', `${header.getBoundingClientRect().height}px`);
+}
+window.addEventListener('resize', syncHeaderHeight);
 
 // -------------------------------------------------------- iris transition
 // The one deliberate motion moment on search submit — plays over the map
@@ -949,7 +980,8 @@ function initFilters() {
   for (const [key, t] of Object.entries(TYPES)) {
     const chip = document.createElement('button');
     chip.className = 'chip'; chip.dataset.type = key;
-    chip.innerHTML = `${t.icon} ${t.label}`;
+    const icon = CHIP_ICON_SVG[key] || '';
+    chip.innerHTML = `<span class="chip-icon" aria-hidden="true">${icon}</span><span class="chip-label">${t.label}</span>`;
     chip.onclick = () => {
       if (state.types.has(key)) state.types.delete(key); else state.types.add(key);
       chip.classList.toggle('active');
@@ -999,6 +1031,8 @@ async function loadCatalog() {
 }
 
 async function init() {
+  syncHeaderHeight();
+  document.fonts?.ready.then(syncHeaderHeight);
   initAISearch();
   initFilters();
   getOrCreateExploreButton();

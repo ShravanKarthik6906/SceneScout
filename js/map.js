@@ -34,11 +34,11 @@ function pinIcon(t, { selected } = {}) {
 }
 
 export function initMap({ onCenterChange, onMarkerClick }) {
-  // zoomControl lives bottom-left so it never collides with the top-left
-  // exposure-style HUD readout the design brief calls for.
+  // bottom-right: bottom-left sits behind the floating search/filter card,
+  // and top-left/top-right are already the HUD readout and view toggles.
   map = L.map('map2d', { zoomControl: false, attributionControl: true })
     .setView([34.04, -118.25], 10);
-  L.control.zoom({ position: 'bottomleft' }).addTo(map);
+  L.control.zoom({ position: 'bottomright' }).addTo(map);
 
   tileLayer = L.tileLayer(DARK_TILES, { maxZoom: 19, attribution: DARK_ATTR }).addTo(map);
 

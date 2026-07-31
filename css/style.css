@@ -118,6 +118,19 @@
   --chalk: #e9e7e1;
   --grain-opacity: 0.06;
   --letterbox: 28px;
+  --header-h: 58px;
+  --sidebar-top: 18px;
+  --sidebar-bottom-gap: 22px;
+  /* shared vertical-rhythm scale — layout paddings/gaps below reference
+     these instead of scattered one-off px values. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  /* one shared tracking value for every small-caps chalk label (SCENE,
+     REFINE FILTERS, field labels) so they read as one type system. */
+  --label-tracking: 1.1px;
   --font-display: 'Special Elite', 'Courier New', monospace;
   --font-body: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'IBM Plex Mono', 'SF Mono', Consolas, monospace;
@@ -178,7 +191,11 @@ body::after {
   pointer-events: none;
   transition: height 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
-.letterbox.top { top: 0; }
+/* Starts below the header, not at viewport y:0 — the header is opaque
+   chrome, not part of the letterboxed content frame, and at y:0 this bar
+   (z-index 9998, opaque) painted directly over the header's own top 28px,
+   slicing the tops off the logo/tagline glyphs that live there. */
+.letterbox.top { top: var(--header-h); }
 .letterbox.bottom { bottom: 0; }
 .letterbox.retracted { height: 0; }
 
@@ -243,12 +260,13 @@ body::after {
 
 /* ---------------------------------------------------------------- header */
 header {
-  height: 58px;
+  min-height: var(--header-h);
   display: flex;
   align-items: center;
   gap: 14px;
   padding: 0 18px;
   position: relative;
+  overflow: visible;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
 }
@@ -266,6 +284,7 @@ header {
   font-family: var(--font-mono);
   font-size: 18px;
   font-weight: 500;
+  line-height: 1.2;
   letter-spacing: 0.5px;
   text-transform: uppercase;
   position: relative;
@@ -297,6 +316,7 @@ header {
 .tagline {
   font-family: var(--font-mono);
   font-size: 11px;
+  line-height: 1.2;
   letter-spacing: 0.3px;
   color: var(--muted);
   border-left: 1px solid var(--line);
@@ -339,7 +359,7 @@ header .spacer {
    results live in a separate bottom-docked filmstrip (#filmstrip). */
 #layout {
   position: relative;
-  height: calc(100% - 58px);
+  height: calc(100% - var(--header-h));
 }
 
 /* the floating index card — rotated slightly like a real card set down on
@@ -352,14 +372,20 @@ header .spacer {
    — dark-on-dark losing the edge entirely was the main risk here. */
 #sidebar {
   position: absolute;
-  top: 18px;
+  top: var(--sidebar-top);
   left: 18px;
   z-index: 550;
   width: 340px;
   max-width: calc(100vw - 36px);
-  max-height: calc(100% - 170px);
+  /* #layout's own height already excludes the header (see #layout above),
+     so this 100% is the viewport minus --header-h — we only need to
+     subtract the panel's own top offset and a bottom breathing-room gap,
+     not a bare magic number. */
+  max-height: calc(100% - var(--sidebar-top) - var(--sidebar-bottom-gap));
   overflow-y: auto;
   overflow-x: hidden;
+  scroll-padding-block-end: var(--space-4);
+  padding-bottom: var(--space-4);
   display: flex;
   flex-direction: column;
   background: var(--slate-body);
@@ -413,6 +439,23 @@ header .spacer {
 #sidebar > * {
   position: relative;
   z-index: 1;
+}
+
+/* Bottom scroll affordance — pinned to the scrollport's visible bottom
+   edge (an absolutely-positioned pseudo-element inside an overflow:auto
+   container stays fixed to the scrollport, not the scrolled content), so
+   it reads as "more below" whenever the panel actually overflows. */
+#sidebar::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  height: 26px;
+  background: linear-gradient(to bottom, rgba(28, 28, 28, 0), var(--slate-body) 85%);
+  pointer-events: none;
+  border-radius: 0 0 9px 9px;
 }
 
 /* Clap-stick: the hinged top piece of a real clapperboard, replacing the
@@ -690,11 +733,11 @@ header .spacer {
 
 /* ------------------------------------------------------------- AI search */
 #ai-search {
-  padding: 14px 16px 12px;
+  padding: var(--space-4) var(--space-4) var(--space-3);
   border-bottom: 1px solid var(--line);
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 9px;
+  gap: var(--space-2);
 }
 
 /* SCENE is the largest, top-left field on the slate — the way a real
@@ -705,11 +748,11 @@ header .spacer {
   font-family: var(--font-display);
   font-size: 15px;
   text-transform: uppercase;
-  letter-spacing: 2px;
+  letter-spacing: var(--label-tracking);
   font-weight: 400;
   color: var(--chalk);
   text-shadow: 0 0 3px rgba(255, 255, 255, 0.22);
-  padding-bottom: 6px;
+  padding-bottom: var(--space-1);
   border-bottom: 1px solid var(--slate-line);
 }
 
@@ -820,10 +863,10 @@ header .spacer {
   font-family: var(--font-display);
   list-style: none;
   cursor: pointer;
-  padding: 10px 16px;
+  padding: var(--space-3) var(--space-4);
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 1.2px;
+  letter-spacing: var(--label-tracking);
   font-weight: 400;
   color: var(--chalk);
   text-shadow: 0 0 2px rgba(255, 255, 255, 0.18);
@@ -884,30 +927,30 @@ header .spacer {
 
 /* --------------------------------------------------------------- filters */
 #filters {
-  padding: 14px 16px 10px;
+  padding: var(--space-4) var(--space-4) var(--space-5);
   border-bottom: 1px solid var(--line);
   display: grid;
-  gap: 11px;
+  gap: var(--space-3);
 }
 
 /* Each filter is a discrete ruled field — like a slate's scene/take/
    director boxes — not a plain stacked label-over-input form row. */
 .filter-row {
   display: grid;
-  gap: 5px;
+  gap: var(--space-1);
 }
 
 .filter-row label {
   font-family: var(--font-display);
   font-size: 10.5px;
   text-transform: uppercase;
-  letter-spacing: 1px;
+  letter-spacing: var(--label-tracking);
   font-weight: 400;
   color: var(--chalk);
   text-shadow: 0 0 2px rgba(255, 255, 255, 0.18);
   display: flex;
   justify-content: space-between;
-  padding-bottom: 4px;
+  padding-bottom: var(--space-1);
   border-bottom: 1px solid var(--slate-line);
 }
 
@@ -924,14 +967,14 @@ header .spacer {
 .filter-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 11px;
+  gap: var(--space-3);
 }
 
 /* vertical rule between the two ruled fields in a row, like a slate's
    column dividers — only where there are actually two fields side by
    side, not a stray line on single-field rows. */
 .filter-grid > .filter-row:first-child {
-  padding-right: 11px;
+  padding-right: var(--space-3);
   border-right: 1px solid var(--slate-line);
 }
 
@@ -955,18 +998,37 @@ input[type="range"] {
 #type-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
   background: var(--panel-2);
   border: 1px solid var(--line);
   color: var(--muted);
   border-radius: 3px;
-  padding: 5px 11px;
+  padding: 6px 12px;
   font-size: 12.5px;
+  line-height: 1;
   cursor: pointer;
   transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+
+.chip-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  line-height: 1;
+  color: inherit;
+}
+
+.chip-icon svg {
+  display: block;
+}
+
+.chip-label {
+  line-height: 1;
 }
 
 .chip:hover {
@@ -980,6 +1042,14 @@ input[type="range"] {
   color: var(--amber);
 }
 
+/* Leaflet's own zoom control otherwise sits at the map container's true
+   bottom corner, which is now covered by the fixed, full-width #filmstrip
+   tray — clear it above the tray's tallest (has-results) state plus the
+   bottom letterbox, so it never sits on top of the tray's own content. */
+.leaflet-bottom.leaflet-right {
+  margin-bottom: 280px;
+}
+
 /* --------------------------------------------------------------- results */
 /* ------------------------------------------------------------- filmstrip */
 /* Bottom-docked tray, always present (like a physical contact-sheet
@@ -990,7 +1060,13 @@ input[type="range"] {
   position: fixed;
   left: 0;
   right: 0;
-  bottom: 0;
+  /* sits just above the bottom letterbox bar, not under it — at bottom:0
+     the bar (z-index 9998, opaque) painted directly over the filmstrip's
+     own bottom edge, the same overlap Fix 1 found at the header. Collapses
+     back to 0 in immersive mode (body.immersive), matching the bars'
+     own .retracted state instead of leaving a stale 28px gap once they've
+     visually disappeared. */
+  bottom: var(--letterbox);
   z-index: 560;
   background: var(--panel);
   border-top: 1px solid var(--line);
@@ -999,9 +1075,10 @@ input[type="range"] {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  transition: max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1), bottom 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
 #filmstrip.has-results { max-height: 236px; }
+body.immersive #filmstrip { bottom: 0; }
 @media (prefers-reduced-motion: reduce) {
   #filmstrip { transition: none; }
 }
