@@ -628,32 +628,37 @@ function buildScene(listing, fp) {
     bb.receiveShadow = true;
     scene.add(bb);
   }
+  // Door jambs are identical geometry (jambH is a constant, only position
+  // varies) across every door in the scene — one InstancedMesh instead of
+  // 2 draw calls per door, same visual result at a fraction of the cost on
+  // the large layouts Stage 0 can now generate (a 13-room house has 24+).
   const FRAME_W = 0.08;
+  const jambH = DOOR_H + FRAME_W * 0.5;
+  const jambPositions = [];
   for (const d of fp.doors) {
-    const jambH = DOOR_H + FRAME_W * 0.5;
     if (d.dir === 'v') {
-      for (const side of [-1, 1]) {
-        const jambGeo = new THREE.BoxGeometry(FRAME_W, jambH, FRAME_W);
-        const jamb = new THREE.Mesh(jambGeo, trimMat);
-        jamb.position.set(d.x, jambH / 2, d.z + side * (d.width / 2));
-        jamb.castShadow = true; scene.add(jamb);
-        collisionGeos.push(jambGeo.clone().translate(jamb.position.x, jamb.position.y, jamb.position.z));
-      }
+      for (const side of [-1, 1]) jambPositions.push([d.x, jambH / 2, d.z + side * (d.width / 2)]);
       const head = new THREE.Mesh(new THREE.BoxGeometry(FRAME_W, FRAME_W, d.width + FRAME_W), trimMat);
       head.position.set(d.x, DOOR_H + FRAME_W / 2, d.z);
       scene.add(head);
     } else {
-      for (const side of [-1, 1]) {
-        const jambGeo = new THREE.BoxGeometry(FRAME_W, jambH, FRAME_W);
-        const jamb = new THREE.Mesh(jambGeo, trimMat);
-        jamb.position.set(d.x + side * (d.width / 2), jambH / 2, d.z);
-        jamb.castShadow = true; scene.add(jamb);
-        collisionGeos.push(jambGeo.clone().translate(jamb.position.x, jamb.position.y, jamb.position.z));
-      }
+      for (const side of [-1, 1]) jambPositions.push([d.x + side * (d.width / 2), jambH / 2, d.z]);
       const head = new THREE.Mesh(new THREE.BoxGeometry(d.width + FRAME_W, FRAME_W, FRAME_W), trimMat);
       head.position.set(d.x, DOOR_H + FRAME_W / 2, d.z);
       scene.add(head);
     }
+  }
+  if (jambPositions.length) {
+    const jambGeo = new THREE.BoxGeometry(FRAME_W, jambH, FRAME_W);
+    const jambs = new THREE.InstancedMesh(jambGeo, trimMat, jambPositions.length);
+    jambs.castShadow = true;
+    const m4 = new THREE.Matrix4();
+    jambPositions.forEach(([x, y, z], i) => {
+      m4.setPosition(x, y, z);
+      jambs.setMatrixAt(i, m4);
+      collisionGeos.push(jambGeo.clone().translate(x, y, z));
+    });
+    scene.add(jambs);
   }
 
   // Collision BVH — a real accelerated structure over the actual wall/jamb
@@ -803,7 +808,7 @@ function buildScene(listing, fp) {
 
   for (const g of collisionGeos) g.dispose();
 
-  return { scene, ceilings, bounds: b, collisionBVH };
+  return { scene, ceilings, bounds: b, collisionBVH, sun };
 }
 
 // ------------------------------------------------------------- collision
@@ -887,6 +892,11 @@ function setupControls(dom) {
     if (e.code === 'KeyM' && ctx.mode === 'walk') toggleMeasure();
     if (e.code === 'KeyB') ctx.composer.bloomPass.enabled = !ctx.composer.bloomPass.enabled;
     if (e.code === 'KeyF') ctx.composer.fxaaPass.enabled = !ctx.composer.fxaaPass.enabled;
+    if (e.code === 'KeyQ') applyQuality(QUALITY_TIERS[(QUALITY_TIERS.indexOf(ctx.quality) + 1) % QUALITY_TIERS.length]);
+    if (e.code === 'KeyP') {
+      ctx.showFPS = !ctx.showFPS;
+      document.getElementById('tour-fps').classList.toggle('hidden', !ctx.showFPS);
+    }
   };
   st.onKeyUp = (e) => st.keys.delete(e.code);
 
@@ -1008,6 +1018,32 @@ function drawMinimap(canvas, fp, bounds, x, z, yaw) {
   g.restore();
 }
 
+// ------------------------------------------------------------ quality tiers
+// Low/Medium/High scales exactly the things that actually cost frame time:
+// shadow resolution, post-processing, and device-pixel-ratio cap. Cycled
+// with Q in walk mode. Defaults to High — this app has no way to detect
+// the user's actual hardware, so it starts optimistic and lets them back
+// off rather than guessing low and looking worse than necessary.
+const QUALITY_TIERS = ['low', 'medium', 'high'];
+const QUALITY = {
+  low: { shadowMapSize: 512, bloom: false, fxaa: false, pixelRatioCap: 1 },
+  medium: { shadowMapSize: 1024, bloom: true, fxaa: true, pixelRatioCap: 1.5 },
+  high: { shadowMapSize: 2048, bloom: true, fxaa: true, pixelRatioCap: 2 },
+};
+
+function applyQuality(tier) {
+  const q = QUALITY[tier];
+  ctx.quality = tier;
+  ctx.renderer.setPixelRatio(Math.min(window.devicePixelRatio, q.pixelRatioCap));
+  ctx.composer.setSize(ctx.renderer.domElement.clientWidth || 1, ctx.renderer.domElement.clientHeight || 1);
+  ctx.composer.bloomPass.enabled = q.bloom;
+  ctx.composer.fxaaPass.enabled = q.fxaa;
+  if (ctx.sun.shadow.mapSize.width !== q.shadowMapSize) {
+    ctx.sun.shadow.mapSize.set(q.shadowMapSize, q.shadowMapSize);
+    if (ctx.sun.shadow.map) { ctx.sun.shadow.map.dispose(); ctx.sun.shadow.map = null; }
+  }
+}
+
 // ------------------------------------------------------------ post-processing
 // A light stack rather than the full SSAO/GTAO the spec describes — SSAO's
 // jsm implementation pulls in a much larger shader/texture dependency
@@ -1059,7 +1095,7 @@ export function openTour(listing, opts = {}) {
 
   const fp = resolveFloorplan(listing);
   validateReachability(fp);
-  const { scene, ceilings, bounds, collisionBVH } = buildScene(listing, fp);
+  const { scene, ceilings, bounds, collisionBVH, sun } = buildScene(listing, fp);
 
   // Procedural PMREM environment (see the RoomEnvironment import note
   // above) — gives every MeshStandardMaterial/RectAreaLight in the scene
@@ -1076,7 +1112,8 @@ export function openTour(listing, opts = {}) {
   const controls = setupControls(renderer.domElement);
 
   ctx = {
-    listing, fp, renderer, scene, camera, ceilings, bounds, controls, pmrem, composer, collisionBVH,
+    listing, fp, renderer, scene, camera, ceilings, bounds, controls, pmrem, composer, collisionBVH, sun,
+    quality: 'high', showFPS: false, fpsAccum: 0, fpsFrames: 0, fpsLastUpdate: performance.now(),
     mode: 'walk',
     x: spawnRoom.x + spawnRoom.w / 2, z: spawnRoom.z + spawnRoom.d / 2,
     yaw: Math.PI * 0.75, pitch: 0, fov: 70,
@@ -1087,6 +1124,7 @@ export function openTour(listing, opts = {}) {
     raf: 0, lastT: performance.now(),
   };
   scene.add(ctx.measure.group);
+  applyQuality(ctx.quality);
 
   // room jump chips
   const roomsBar = document.getElementById('tour-rooms');
@@ -1198,7 +1236,7 @@ function addMeasurePoint(worldPt) {
 }
 function walkHelp() {
   return document.pointerLockElement
-    ? 'Mouse to look · WASD to move · Shift run · C crouch · M measure · B bloom · F antialiasing · Esc exit'
+    ? 'Mouse to look · WASD to move · Shift run · C crouch · M measure · B bloom · F AA · Q quality · P fps · Esc exit'
     : 'Click to look around · WASD to move · Esc exit';
 }
 
@@ -1242,8 +1280,18 @@ function loop() {
   if (!ctx) return;
   ctx.raf = requestAnimationFrame(loop);
   const now = performance.now();
-  const dt = Math.min(0.05, (now - ctx.lastT) / 1000);
+  const realDt = now - ctx.lastT; // unclamped, for the FPS readout below
+  const dt = Math.min(0.05, realDt / 1000);
   ctx.lastT = now;
+
+  if (ctx.showFPS) {
+    ctx.fpsAccum += realDt; ctx.fpsFrames++;
+    if (now - ctx.fpsLastUpdate > 500) {
+      const fps = Math.round(1000 / (ctx.fpsAccum / ctx.fpsFrames));
+      document.getElementById('tour-fps').textContent = `${fps} fps · ${ctx.quality} quality`;
+      ctx.fpsAccum = 0; ctx.fpsFrames = 0; ctx.fpsLastUpdate = now;
+    }
+  }
 
   const { camera, controls } = ctx;
 
