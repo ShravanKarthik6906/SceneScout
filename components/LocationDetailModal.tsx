@@ -9,6 +9,7 @@ import SaveToBoard from "./SaveToBoard";
 const AerialViewer = dynamic(() => import("./AerialViewer"), { ssr: false });
 const StreetViewViewer = dynamic(() => import("./StreetViewViewer"), { ssr: false });
 const IndoorTourViewer = dynamic(() => import("./IndoorTourViewer"), { ssr: false });
+const Blueprint3DViewer = dynamic(() => import("./Blueprint3DViewer"), { ssr: false });
 
 interface LocationDetailModalProps {
   location: LocationResult;
@@ -19,6 +20,7 @@ const TABS: { id: ViewMode; label: string; icon: string; desc: string }[] = [
   { id: "aerial", label: "Aerial 3D", icon: "🌍", desc: "Satellite + tilt" },
   { id: "street", label: "Street View", icon: "📍", desc: "Walk the block" },
   { id: "indoor", label: "Indoor Tour", icon: "🏛", desc: "360° walkthrough" },
+  { id: "blueprint" as unknown as ViewMode, label: "Blueprint 3D", icon: "📐", desc: "Walkable floorplan" },
 ];
 
 const CAT_LABELS: Record<string, string> = {
@@ -75,7 +77,7 @@ export default function LocationDetailModal({ location, onClose }: LocationDetai
         {/* ── Tab switcher ── */}
         <div className="flex gap-1 px-4 py-2 bg-gray-950 border-b border-white/10 shrink-0 overflow-x-auto">
           {TABS.map((tab) => {
-            const isIndoor = tab.id === "indoor";
+            const isIndoor = tab.id === "indoor" as ViewMode;
             const disabled = isIndoor && rooms.length === 0;
             return (
               <button
@@ -109,6 +111,7 @@ export default function LocationDetailModal({ location, onClose }: LocationDetai
             {activeViewMode === "indoor" && rooms.length > 0 && (
               <IndoorTourViewer rooms={rooms} />
             )}
+            {activeViewMode === "blueprint" && <Blueprint3DViewer location={location} />}
           </div>
 
           {/* ── Info sidebar (desktop) ── */}
