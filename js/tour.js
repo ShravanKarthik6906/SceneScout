@@ -8,6 +8,10 @@
 // collision, and UI layer would stay the same.
 
 import * as THREE from 'three';
+import { RoomEnvironment } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/environments/RoomEnvironment.js';
+import { EffectComposer } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/UnrealBloomPass.js';
 
 const WALL_T = 0.16;
 const DOOR_H = 2.1;
@@ -107,7 +111,7 @@ function applyDoors(segments, doors) {
 // ------------------------------------------------------------ mesh helpers
 
 function mat(color, opts = {}) {
-  return new THREE.MeshStandardMaterial({ color, roughness: 0.88, metalness: 0.02, ...opts });
+  return new THREE.MeshStandardMaterial({ color, roughness: 0.88, metalness: 0.02, envMapIntensity: 0.4, ...opts });
 }
 
 function addBox(group, w, h, d, material, x, y, z, rotY = 0, shadows = true) {
@@ -144,6 +148,35 @@ function getWindowTexture() {
   g.strokeRect(0, 0, 128, 160);
   windowTexture = new THREE.CanvasTexture(c);
   return windowTexture;
+}
+
+const textureCache = {};
+function getProceduralTexture(baseColor, kind) {
+  const key = baseColor + kind;
+  if (textureCache[key]) return textureCache[key];
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = baseColor; g.fillRect(0, 0, 256, 256);
+  g.globalAlpha = 0.15;
+  if (kind === 'wood') {
+    for (let i = 0; i < 12; i++) {
+      g.strokeStyle = i % 2 ? '#000' : '#fff';
+      g.lineWidth = 2 + Math.random() * 3;
+      g.beginPath(); g.moveTo(0, i * 22 + Math.random() * 6);
+      g.lineTo(256, i * 22 + Math.random() * 6); g.stroke();
+    }
+  } else if (kind === 'concrete' || kind === 'brick') {
+    for (let i = 0; i < 400; i++) {
+      g.fillStyle = Math.random() > 0.5 ? '#000' : '#fff';
+      g.fillRect(Math.random() * 256, Math.random() * 256, 2, 2);
+    }
+  }
+  g.globalAlpha = 1;
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  textureCache[key] = tex;
+  return tex;
 }
 
 function makeLabelSprite(text) {
@@ -461,7 +494,7 @@ function buildScene(listing) {
   scene.background = new THREE.Color(outdoor ? '#141b2a' : '#0b0d13');
   scene.fog = new THREE.Fog(scene.background, 40, 120);
 
-  const wallMat = mat(p.wall);
+  const wallMat = mat(p.wall, { map: getProceduralTexture(p.wall, 'concrete') });
   const floorMats = {};
   const ceilings = new THREE.Group();
 
@@ -503,7 +536,7 @@ function buildScene(listing) {
   const rand = mulberry32(hashStr(listing.id));
   for (const r of rooms) {
     const fkey = r.style === 'studio' || r.style === 'gallery' ? '#e8e8e6' : p.floor;
-    if (!floorMats[fkey]) floorMats[fkey] = mat(fkey, { roughness: 0.75 });
+    if (!floorMats[fkey]) floorMats[fkey] = mat(fkey, { roughness: 0.75, map: getProceduralTexture(fkey, 'wood') });
     const fl = new THREE.Mesh(new THREE.PlaneGeometry(r.w, r.d), floorMats[fkey]);
     fl.rotation.x = -Math.PI / 2;
     fl.position.set(r.x + r.w / 2, 0, r.z + r.d / 2);
@@ -556,7 +589,13 @@ function buildScene(listing) {
 
     // per-room fill light
     if (!r.open) {
-      const rl = new THREE.PointLight('#fff1e0', Math.min(60, 12 + r.w * r.d * 0.5), 0, 2);
+      const fillColor = r.style === 'studio'  ? '#e8ecf4'
+                      : r.style === 'control' ? '#68d8ff'
+                      : r.style === 'kitchen' ? '#fff8e8'
+                      : r.style === 'bar'     ? '#ff9d60'
+                      : r.style === 'lounge'  ? '#ffe0b0'
+                      : '#fff1e0';
+      const rl = new THREE.PointLight(fillColor, Math.min(38, 8 + r.w * r.d * 0.35), 0, 2);
       rl.position.set(r.x + r.w / 2, r.h - 0.4, r.z + r.d / 2);
       scene.add(rl);
     }
@@ -751,18 +790,30 @@ export function openTour(listing, opts = {}) {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.3;
+  renderer.toneMappingExposure = 1.0;
   wrap.appendChild(renderer.domElement);
 
   const { scene, ceilings, bounds } = buildScene(listing);
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  pmrem.dispose();
   const camera = new THREE.PerspectiveCamera(70, wrap.clientWidth / wrap.clientHeight, 0.05, 300);
   camera.rotation.order = 'YXZ';
+
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  composer.addPass(new UnrealBloomPass(
+    new THREE.Vector2(wrap.clientWidth, wrap.clientHeight),
+    0.35,   // strength
+    0.4,    // radius
+    0.94,   // threshold — only true light sources bloom, not regular bright surfaces
+  ));
 
   const spawnRoom = listing.floorplan.rooms[0];
   const controls = setupControls(renderer.domElement);
 
   ctx = {
-    listing, renderer, scene, camera, ceilings, bounds, controls,
+    listing, renderer, composer, scene, camera, ceilings, bounds, controls,
     mode: 'walk',
     x: spawnRoom.x + spawnRoom.w / 2, z: spawnRoom.z + spawnRoom.d / 2,
     yaw: Math.PI * 0.75, pitch: 0, fov: 70,
@@ -795,6 +846,7 @@ export function openTour(listing, opts = {}) {
   ctx.onResize = () => {
     if (!ctx) return;
     renderer.setSize(wrap.clientWidth, wrap.clientHeight);
+    composer.setSize(wrap.clientWidth, wrap.clientHeight);
     camera.aspect = wrap.clientWidth / wrap.clientHeight;
     camera.updateProjectionMatrix();
   };
@@ -928,7 +980,7 @@ function loop() {
 
   if (ctx.mode === 'fly') {
     updateFly(dt);
-    ctx.renderer.render(ctx.scene, camera);
+    ctx.composer.render();
     return;
   }
 
@@ -947,10 +999,14 @@ function loop() {
     let tvx = 0, tvz = 0;
     if (mx || mz) {
       const len = Math.hypot(mx, mz); mx /= len; mz /= len;
+      // Three.js camera.rotation.set(pitch, yaw, 0) 'XYZ':
+      // look direction in world = ( sin(yaw), 0, -cos(yaw) )
+      // right direction in world = ( cos(yaw), 0,  sin(yaw) )
+      // W sets mz=-1 (forward), D sets mx=+1 (right)
       const sin = Math.sin(ctx.yaw), cos = Math.cos(ctx.yaw);
       const sp = 3.2 * run;
-      tvx = (mx * cos - mz * sin) * sp;
-      tvz = (mx * sin + mz * cos) * sp;
+      tvx = (mz * sin + mx * cos) * sp;
+      tvz = (mz * cos - mx * sin) * sp;
     }
     const smooth = 1 - Math.pow(0.0025, dt); // frame-rate independent lerp
     ctx.vel.x += (tvx - ctx.vel.x) * smooth;
@@ -985,7 +1041,7 @@ function loop() {
     if (camera.fov !== 55) { camera.fov = 55; camera.updateProjectionMatrix(); }
   }
 
-  ctx.renderer.render(ctx.scene, camera);
+  ctx.composer.render();
 }
 
 export function closeTour() {
@@ -1000,6 +1056,7 @@ export function closeTour() {
       m.dispose();
     });
   });
+  ctx.composer.dispose();
   ctx.renderer.dispose();
   ctx.renderer.domElement.remove();
   ctx = null;
