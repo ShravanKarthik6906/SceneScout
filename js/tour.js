@@ -10,11 +10,28 @@
 import * as THREE from 'three';
 import { generateFloorplan, hashStr, mulberry32 } from './floorplanGen.js';
 import { resolvePreset, colorTempToHex } from './stylePresets.js';
+import { RoomEnvironment } from '/vendor/three/jsm/environments/RoomEnvironment.js';
+import { RectAreaLightUniformsLib } from '/vendor/three/jsm/lights/RectAreaLightUniformsLib.js';
+import { EffectComposer } from '/vendor/three/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from '/vendor/three/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from '/vendor/three/jsm/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from '/vendor/three/jsm/postprocessing/ShaderPass.js';
+import { OutputPass } from '/vendor/three/jsm/postprocessing/OutputPass.js';
+import { FXAAShader } from '/vendor/three/jsm/shaders/FXAAShader.js';
+
+// No real HDR file to load (this build has no outbound network access to
+// fetch one) — RectAreaLightUniformsLib.init() and a procedural PMREM
+// environment (RoomEnvironment: a small lit box, not a real photo) still
+// give MeshStandardMaterial/RectAreaLight correct-looking reflections and
+// falloff instead of the flat, reflectionless look plain materials have
+// with no environment map at all.
+RectAreaLightUniformsLib.init();
 
 const WALL_T = 0.16;
 const DOOR_H = 2.1;
 const EYE = 1.6;
 const CROUCH_EYE = 1.02;
+const TOUR_EXPOSURE = 1.3;
 
 let ctx = null; // active tour context
 
@@ -172,6 +189,29 @@ function getWindowTexture(style = 'grid') {
   const tex = new THREE.CanvasTexture(c);
   windowTextures[style] = tex;
   return tex;
+}
+
+// Real 3D mullion bars in front of the glass pane, matching the same
+// preset-driven pattern as the backdrop texture drawn above (kept in sync
+// by hand since one is a canvas and the other is geometry, but both key
+// off the same `style` string).
+function addWindowMullions(group, w, h, style, trimMat) {
+  const bar = (bw, bh, x, y) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, 0.03), trimMat);
+    m.position.set(x, y, 0.02);
+    group.add(m);
+  };
+  if (style === 'minimal') {
+    // frame only, no interior bars
+  } else if (style === 'curtainWall') {
+    for (let x = -w / 2 + w / 4; x < w / 2; x += w / 4) bar(0.04, h, x, 0);
+  } else if (style === 'steelSash') {
+    bar(0.035, h, 0, 0);
+    for (let y = -h / 2 + h / 4; y < h / 2; y += h / 4) bar(w, 0.035, 0, y);
+  } else { // 'grid'
+    bar(0.045, h, 0, 0);
+    bar(w, 0.045, 0, 0);
+  }
 }
 
 function makeLabelSprite(text) {
@@ -554,8 +594,56 @@ function buildScene(listing, fp) {
     scene.add(m);
   }
 
+  // baseboard + door-frame trim, derived from the same wall/door geometry
+  // above rather than a per-listing constant — works for any wall run or
+  // door count since it just rides along pieces/fp.doors.
+  const trimMat = mat(shadeHex(p.wall, -38), { roughness: 0.55 });
+  const BB_H = 0.11, BB_OUT = WALL_T / 2 + 0.015;
+  for (const w of pieces) {
+    const len = w.a2 - w.a1, mid = (w.a1 + w.a2) / 2;
+    const geo = w.dir === 'h'
+      ? new THREE.BoxGeometry(len, BB_H, WALL_T + BB_OUT)
+      : new THREE.BoxGeometry(WALL_T + BB_OUT, BB_H, len);
+    const bb = new THREE.Mesh(geo, trimMat);
+    bb.position.set(w.dir === 'h' ? mid : w.c, BB_H / 2, w.dir === 'h' ? w.c : mid);
+    bb.receiveShadow = true;
+    scene.add(bb);
+  }
+  const FRAME_W = 0.08;
+  for (const d of fp.doors) {
+    const jambH = DOOR_H + FRAME_W * 0.5;
+    if (d.dir === 'v') {
+      for (const side of [-1, 1]) {
+        const jamb = new THREE.Mesh(new THREE.BoxGeometry(FRAME_W, jambH, FRAME_W), trimMat);
+        jamb.position.set(d.x, jambH / 2, d.z + side * (d.width / 2));
+        jamb.castShadow = true; scene.add(jamb);
+      }
+      const head = new THREE.Mesh(new THREE.BoxGeometry(FRAME_W, FRAME_W, d.width + FRAME_W), trimMat);
+      head.position.set(d.x, DOOR_H + FRAME_W / 2, d.z);
+      scene.add(head);
+    } else {
+      for (const side of [-1, 1]) {
+        const jamb = new THREE.Mesh(new THREE.BoxGeometry(FRAME_W, jambH, FRAME_W), trimMat);
+        jamb.position.set(d.x + side * (d.width / 2), jambH / 2, d.z);
+        jamb.castShadow = true; scene.add(jamb);
+      }
+      const head = new THREE.Mesh(new THREE.BoxGeometry(d.width + FRAME_W, FRAME_W, FRAME_W), trimMat);
+      head.position.set(d.x, DOOR_H + FRAME_W / 2, d.z);
+      scene.add(head);
+    }
+  }
+
   // floors, ceilings, windows, skylights, furniture, labels, room lights
   const winTex = getWindowTexture(preset.windowMullion);
+  // RectAreaLight uses an LTC shading model that's real-time-expensive per
+  // light — a 13-room house can have 30+ window openings, and a light per
+  // window would tank frame rate on exactly the large/generous layouts
+  // Stage 0 now generates. Budget it: every window still gets its glass/
+  // mullion geometry (so the room never looks unlit or broken), but only
+  // the first WINDOW_LIGHT_BUDGET actually get a real light — the per-room
+  // point light already covers general fill for the rest.
+  const WINDOW_LIGHT_BUDGET = 24;
+  let windowLightsUsed = 0;
   const rand = mulberry32(hashStr(listing.id));
   for (const r of rooms) {
     const fkey = r.style === 'studio' || r.style === 'gallery' ? '#e8e8e6' : p.floor;
@@ -584,26 +672,46 @@ function buildScene(listing, fp) {
       }
     }
 
-    // windows: glowing textured planes set just inside each exterior wall
+    // windows: a canvas-textured backdrop (the "sky" beyond the glass) plus
+    // a transmissive glass pane and preset-driven mullion bars in front of
+    // it, and a RectAreaLight sized to the opening so the window is an
+    // actual light source into the room, not just a lit-looking texture.
     const win = r.win || {};
     const winPlane = (wall, i, count) => {
-      const m = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.7),
-        new THREE.MeshBasicMaterial({ map: winTex }));
+      const W = 1.5, H = 1.7;
       const off = WALL_T / 2 + 0.03;
       const y = Math.min(0.95 + 0.85, r.h - 0.5); // center of window
-      if (wall === 'n') {
-        m.position.set(r.x + (i + 1) * r.w / (count + 1), y, r.z + off);
-      } else if (wall === 's') {
-        m.position.set(r.x + (i + 1) * r.w / (count + 1), y, r.z + r.d - off);
-        m.rotation.y = Math.PI;
-      } else if (wall === 'w') {
-        m.position.set(r.x + off, y, r.z + (i + 1) * r.d / (count + 1));
-        m.rotation.y = Math.PI / 2;
-      } else {
-        m.position.set(r.x + r.w - off, y, r.z + (i + 1) * r.d / (count + 1));
-        m.rotation.y = -Math.PI / 2;
+      let x, z, rotY;
+      if (wall === 'n') { x = r.x + (i + 1) * r.w / (count + 1); z = r.z + off; rotY = 0; }
+      else if (wall === 's') { x = r.x + (i + 1) * r.w / (count + 1); z = r.z + r.d - off; rotY = Math.PI; }
+      else if (wall === 'w') { x = r.x + off; z = r.z + (i + 1) * r.d / (count + 1); rotY = Math.PI / 2; }
+      else { x = r.x + r.w - off; z = r.z + (i + 1) * r.d / (count + 1); rotY = -Math.PI / 2; }
+
+      const group = new THREE.Group();
+      group.position.set(x, y, z);
+      group.rotation.y = rotY;
+
+      const backdrop = new THREE.Mesh(new THREE.PlaneGeometry(W, H), new THREE.MeshBasicMaterial({ map: winTex }));
+      backdrop.position.z = -0.015;
+      group.add(backdrop);
+
+      const glass = new THREE.Mesh(new THREE.PlaneGeometry(W * 0.92, H * 0.92), new THREE.MeshPhysicalMaterial({
+        color: '#dceeff', transmission: 0.9, roughness: 0.06, metalness: 0, thickness: 0.02,
+        ior: 1.5, transparent: true, opacity: 0.35,
+      }));
+      group.add(glass);
+
+      addWindowMullions(group, W, H, preset.windowMullion, trimMat);
+
+      if (windowLightsUsed < WINDOW_LIGHT_BUDGET) {
+        windowLightsUsed++;
+        const rl = new THREE.RectAreaLight(colorTempToHex(6500), 3.2, W * 0.9, H * 0.9);
+        rl.position.z = -0.05;
+        rl.rotation.y = Math.PI; // RectAreaLight emits along -Z of its local frame
+        group.add(rl);
       }
-      scene.add(m);
+
+      scene.add(group);
     };
     for (const wall of ['n', 's', 'e', 'w']) {
       const count = win[wall] || 0;
@@ -697,6 +805,8 @@ function setupControls(dom) {
     if (!ctx) return;
     if (ctx.mode === 'fly') { setMode('walk'); return; }
     if (e.code === 'KeyM' && ctx.mode === 'walk') toggleMeasure();
+    if (e.code === 'KeyB') ctx.composer.bloomPass.enabled = !ctx.composer.bloomPass.enabled;
+    if (e.code === 'KeyF') ctx.composer.fxaaPass.enabled = !ctx.composer.fxaaPass.enabled;
   };
   st.onKeyUp = (e) => st.keys.delete(e.code);
   st.onPointerDown = (e) => {
@@ -794,6 +904,34 @@ function drawMinimap(canvas, fp, bounds, x, z, yaw) {
   g.restore();
 }
 
+// ------------------------------------------------------------ post-processing
+// A light stack rather than the full SSAO/GTAO the spec describes — SSAO's
+// jsm implementation pulls in a much larger shader/texture dependency
+// chain, and this build can't fetch anything beyond what's vendored
+// locally. Bloom (mild, so it reads as light bleeding off windows/fixtures,
+// not a glow filter) + FXAA + a correct tone-mapped output pass covers most
+// of the visible gap. Each pass is independently toggleable via .enabled —
+// press B / F in walk mode to see the difference.
+function buildComposer(renderer, scene, camera, wrap) {
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+
+  const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.35, 0.55, 0.86);
+  composer.addPass(bloom);
+
+  const fxaa = new ShaderPass(FXAAShader);
+  const pr = renderer.getPixelRatio();
+  fxaa.material.uniforms['resolution'].value.set(1 / (w * pr), 1 / (h * pr));
+  composer.addPass(fxaa);
+
+  composer.addPass(new OutputPass());
+
+  composer.bloomPass = bloom;
+  composer.fxaaPass = fxaa;
+  return composer;
+}
+
 // ------------------------------------------------------------ public API
 
 export function openTour(listing, opts = {}) {
@@ -811,19 +949,29 @@ export function openTour(listing, opts = {}) {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.3;
+  renderer.toneMappingExposure = TOUR_EXPOSURE;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
   wrap.appendChild(renderer.domElement);
 
   const fp = resolveFloorplan(listing);
   const { scene, ceilings, bounds } = buildScene(listing, fp);
+
+  // Procedural PMREM environment (see the RoomEnvironment import note
+  // above) — gives every MeshStandardMaterial/RectAreaLight in the scene
+  // plausible reflections instead of looking flat with no envMap at all.
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
   const camera = new THREE.PerspectiveCamera(70, wrap.clientWidth / wrap.clientHeight, 0.05, 300);
   camera.rotation.order = 'YXZ';
+
+  const composer = buildComposer(renderer, scene, camera, wrap);
 
   const spawnRoom = fp.rooms[0];
   const controls = setupControls(renderer.domElement);
 
   ctx = {
-    listing, fp, renderer, scene, camera, ceilings, bounds, controls,
+    listing, fp, renderer, scene, camera, ceilings, bounds, controls, pmrem, composer,
     mode: 'walk',
     x: spawnRoom.x + spawnRoom.w / 2, z: spawnRoom.z + spawnRoom.d / 2,
     yaw: Math.PI * 0.75, pitch: 0, fov: 70,
@@ -855,8 +1003,12 @@ export function openTour(listing, opts = {}) {
 
   ctx.onResize = () => {
     if (!ctx) return;
-    renderer.setSize(wrap.clientWidth, wrap.clientHeight);
-    camera.aspect = wrap.clientWidth / wrap.clientHeight;
+    const w = wrap.clientWidth, h = wrap.clientHeight;
+    renderer.setSize(w, h);
+    composer.setSize(w, h);
+    const pr = renderer.getPixelRatio();
+    composer.fxaaPass.material.uniforms['resolution'].value.set(1 / (w * pr), 1 / (h * pr));
+    camera.aspect = w / h;
     camera.updateProjectionMatrix();
   };
   window.addEventListener('resize', ctx.onResize);
@@ -940,7 +1092,7 @@ function addMeasurePoint(worldPt) {
   }
 }
 function walkHelp() {
-  return 'Drag to look · WASD to move · Shift run · C crouch · M measure · Esc exit';
+  return 'Drag to look · WASD to move · Shift run · C crouch · M measure · B bloom · F antialiasing · Esc exit';
 }
 
 const GROUND_PLANE = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -989,7 +1141,7 @@ function loop() {
 
   if (ctx.mode === 'fly') {
     updateFly(dt);
-    ctx.renderer.render(ctx.scene, camera);
+    ctx.composer.render();
     return;
   }
 
@@ -1046,7 +1198,7 @@ function loop() {
     if (camera.fov !== 55) { camera.fov = 55; camera.updateProjectionMatrix(); }
   }
 
-  ctx.renderer.render(ctx.scene, camera);
+  ctx.composer.render();
 }
 
 export function closeTour() {
@@ -1061,6 +1213,8 @@ export function closeTour() {
       m.dispose();
     });
   });
+  ctx.pmrem.dispose();
+  ctx.composer.dispose();
   ctx.renderer.dispose();
   ctx.renderer.domElement.remove();
   ctx = null;
