@@ -866,6 +866,12 @@ function validateReachability(fp) {
 
 // --------------------------------------------------------------- controls
 
+// True pointer-lock mouselook in walk mode (click to lock, mouse moves the
+// view with no button held, matching a real first-person game rather than
+// the old click-and-drag-to-look) — dollhouse/floor-plan modes keep the
+// previous drag-to-orbit behavior since pointer lock doesn't make sense
+// for an orbit camera. Falls back to drag-to-look automatically wherever
+// requestPointerLock isn't available (some mobile browsers) or is denied.
 function setupControls(dom) {
   const st = {
     keys: new Set(),
@@ -883,17 +889,34 @@ function setupControls(dom) {
     if (e.code === 'KeyF') ctx.composer.fxaaPass.enabled = !ctx.composer.fxaaPass.enabled;
   };
   st.onKeyUp = (e) => st.keys.delete(e.code);
+
   st.onPointerDown = (e) => {
     if (ctx && ctx.mode === 'fly') { setMode('walk'); return; }
+    if (ctx && ctx.mode === 'walk' && dom.requestPointerLock) {
+      if (document.pointerLockElement !== dom) { dom.requestPointerLock(); return; }
+      // Already locked and the tour is in measure mode — a click here is a
+      // measurement point, raycast from the crosshair (screen center) since
+      // the OS cursor is hidden/frozen under lock, not from e.clientX/Y.
+      if (ctx.measure.on) measureAt(dom.clientWidth / 2, dom.clientHeight / 2, dom);
+      return;
+    }
     st.dragging = true; st.lastX = st.downX = e.clientX; st.lastY = st.downY = e.clientY; st.moved = 0;
     try { dom.setPointerCapture(e.pointerId); } catch { /* synthetic events */ }
   };
   st.onPointerUp = (e) => {
     st.dragging = false;
-    if (ctx && ctx.measure.on && ctx.mode === 'walk' && st.moved < 6) measureAt(e.clientX, e.clientY, dom);
+    if (ctx && ctx.measure.on && ctx.mode === 'walk' && document.pointerLockElement !== dom && st.moved < 6) {
+      measureAt(e.clientX, e.clientY, dom);
+    }
   };
   st.onPointerMove = (e) => {
-    if (!st.dragging || !ctx) return;
+    if (!ctx) return;
+    if (ctx.mode === 'walk' && document.pointerLockElement === dom) {
+      ctx.yaw -= e.movementX * 0.0022;
+      ctx.pitch = Math.max(-1.35, Math.min(1.35, ctx.pitch - e.movementY * 0.0022));
+      return;
+    }
+    if (!st.dragging) return;
     const dx = e.clientX - st.lastX, dy = e.clientY - st.lastY;
     st.lastX = e.clientX; st.lastY = e.clientY;
     st.moved += Math.abs(dx) + Math.abs(dy);
@@ -914,12 +937,17 @@ function setupControls(dom) {
       ctx.orbitR = Math.max(4, Math.min(90, ctx.orbitR * (1 + e.deltaY * 0.0012)));
     }
   };
+  st.onPointerLockChange = () => {
+    document.getElementById('tour-help').textContent =
+      (ctx && ctx.mode === 'walk') ? walkHelp() : '';
+  };
   window.addEventListener('keydown', st.onKeyDown);
   window.addEventListener('keyup', st.onKeyUp);
   dom.addEventListener('pointerdown', st.onPointerDown);
   dom.addEventListener('pointerup', st.onPointerUp);
   dom.addEventListener('pointermove', st.onPointerMove);
   dom.addEventListener('wheel', st.onWheel, { passive: false });
+  document.addEventListener('pointerlockchange', st.onPointerLockChange);
   return st;
 }
 
@@ -930,6 +958,8 @@ function teardownControls(st, dom) {
   dom.removeEventListener('pointerup', st.onPointerUp);
   dom.removeEventListener('pointermove', st.onPointerMove);
   dom.removeEventListener('wheel', st.onWheel);
+  document.removeEventListener('pointerlockchange', st.onPointerLockChange);
+  if (document.pointerLockElement === dom) document.exitPointerLock();
 }
 
 // ---------------------------------------------------------------- minimap
@@ -1167,7 +1197,9 @@ function addMeasurePoint(worldPt) {
   }
 }
 function walkHelp() {
-  return 'Drag to look · WASD to move · Shift run · C crouch · M measure · B bloom · F antialiasing · Esc exit';
+  return document.pointerLockElement
+    ? 'Mouse to look · WASD to move · Shift run · C crouch · M measure · B bloom · F antialiasing · Esc exit'
+    : 'Click to look around · WASD to move · Esc exit';
 }
 
 const GROUND_PLANE = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -1186,6 +1218,7 @@ function setMode(mode) {
   ctx.mode = mode;
   ctx.ceilings.visible = (mode === 'walk' || mode === 'fly');
   if (mode !== 'walk' && ctx.measure.on) toggleMeasure();
+  if (mode !== 'walk' && document.pointerLockElement === ctx.renderer.domElement) document.exitPointerLock();
   document.querySelectorAll('#tour-modes button').forEach(b =>
     b.classList.toggle('active', b.dataset.mode === mode));
   document.getElementById('tour-minimap').style.display = mode === 'walk' ? 'block' : 'none';
@@ -1255,8 +1288,20 @@ function loop() {
 
     const eye = ctx.crouch ? CROUCH_EYE : EYE;
     ctx.eye = (ctx.eye ?? EYE) + (eye - (ctx.eye ?? EYE)) * Math.min(1, dt * 10);
-    camera.position.set(ctx.x, ctx.eye, ctx.z);
+
+    // Head-bob: phase advances with distance actually traveled (not just
+    // time), so it's tied to footsteps rather than ticking while stationary.
+    // Amplitude fades in/out with speed so it's imperceptible standing
+    // still and subtle even at a full sprint — a wobble, not seasickness.
+    const speed = Math.hypot(ctx.vel.x, ctx.vel.z);
+    const speedFrac = Math.min(1, speed / 4.5);
+    ctx.bobPhase = (ctx.bobPhase ?? 0) + speed * dt * 1.8;
+    const bobY = speedFrac > 0.02 ? Math.abs(Math.sin(ctx.bobPhase)) * 0.028 * speedFrac : 0;
+    const bobX = speedFrac > 0.02 ? Math.sin(ctx.bobPhase * 0.5) * 0.018 * speedFrac : 0;
+
+    camera.position.set(ctx.x, ctx.eye + bobY, ctx.z);
     camera.rotation.set(ctx.pitch, ctx.yaw, 0);
+    camera.translateX(bobX); // lateral sway relative to look direction, not world X
     if (Math.abs(camera.fov - ctx.fov) > 0.1) {
       camera.fov += (ctx.fov - camera.fov) * 0.25;
       camera.updateProjectionMatrix();
