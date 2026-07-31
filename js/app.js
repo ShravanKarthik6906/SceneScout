@@ -11,6 +11,7 @@ import { TYPES, CENTERS, LIGHT_LABELS } from './catalog.js';
 import { initMap, updateMap, flyToListing, fitToRadius, setSelectedMarker, clearSelectedMarker, setSatellite, isSatellite } from './map.js';
 import { drawPlanThumb, drawIsoHero } from './thumbs.js';
 import { openTour } from './tour.js';
+import { DEBUG_LOCATIONS } from './floorplanGen.js';
 import { parseQuery } from './nlp.js';
 import { computeSuitability } from './score.js';
 import { sunTimes, sunPosition, fmtTime, fmtTimeAt, tzAbbr, compass, geocode, forecast, weatherText, fetchLocationPhotos, fetchPlaceInfo, reverseGeocode } from './intel.js';
@@ -1062,6 +1063,16 @@ async function init() {
   document.getElementById('settings-save').onclick = saveSettings;
   document.getElementById('settings-close').onclick = () => document.getElementById('settings').classList.add('hidden');
   document.getElementById('settings').onclick = (e) => { if (e.target.id === 'settings') e.target.classList.add('hidden'); };
+
+  // Debug route: ?debugTour=studio|large|irregular|windowless opens the
+  // digital twin directly against a synthetic location, bypassing search —
+  // lets the floor-plan generator's edge cases (1 room, many rooms, an
+  // irregular footprint, zero windows) be checked without real data.
+  const debugTour = new URLSearchParams(window.location.search).get('debugTour');
+  if (debugTour && DEBUG_LOCATIONS[debugTour]) {
+    setImmersive('tour', true);
+    openTour(DEBUG_LOCATIONS[debugTour]);
+  }
 
   render();
   fitToRadius(state);

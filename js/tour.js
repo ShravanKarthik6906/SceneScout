@@ -8,6 +8,7 @@
 // collision, and UI layer would stay the same.
 
 import * as THREE from 'three';
+import { generateFloorplan, hashStr, mulberry32 } from './floorplanGen.js';
 
 const WALL_T = 0.16;
 const DOOR_H = 2.1;
@@ -18,18 +19,22 @@ let ctx = null; // active tour context
 
 // ---------------------------------------------------------------- utilities
 
-function mulberry32(seed) {
-  return function () {
-    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-function hashStr(s) {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
-  return h >>> 0;
+// scripts/build-catalog.js bakes one of 8 fixed room templates into every
+// Kaggle-derived listing (see catalog.js's header comment) regardless of
+// its real sqft, which is exactly the "every warehouse looks the same"
+// problem this app is trying to get away from. Those listings are tagged
+// `_source` at build time — for them, generate a floorplan from the real
+// sqft/ceiling data instead of trusting the baked template. Hand-authored
+// data.js locations (no `_source`) keep their authored floorplan; a debug
+// fixture can force a specific floorplan via `_forceFloorplan` to test an
+// edge case the generator wouldn't naturally produce (e.g. zero windows).
+function resolveFloorplan(listing) {
+  if (listing._forceFloorplan) return listing._forceFloorplan;
+  if (!listing._source && listing.floorplan?.rooms?.length) return listing.floorplan;
+  const fp = generateFloorplan(listing);
+  // Belt-and-braces: even a malformed/empty authored floorplan (or a future
+  // generator bug) should never leave the scene with zero rooms.
+  return fp.rooms.length ? fp : generateFloorplan({ ...listing, type: 'default' });
 }
 
 function planBounds(rooms) {
@@ -433,9 +438,37 @@ function furnish(group, room, listing, rand) {
       sl2.position.set(cx, 2.2, cz); group.add(sl2);
       break;
     }
+    case 'bath': {
+      addBox(group, 0.6, 0.42, 0.42, lightGray, room.x + 0.4, 0.21, room.z + 0.35);
+      addBox(group, 0.55, 0.75, 0.5, lightGray, room.x + room.w - 0.4, 0.38, room.z + 0.3);
+      const mirror = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.65),
+        new THREE.MeshBasicMaterial({ color: '#dfeaf5' }));
+      mirror.position.set(room.x + room.w - 0.4, 1.4, room.z + 0.06); group.add(mirror);
+      break;
+    }
+    case 'hall': {
+      // Circulation only — deliberately minimal so it reads as a passage,
+      // not a destination, but never bare/broken.
+      rug(cx, cz, Math.min(room.w * 0.7, room.d - 0.4), Math.min(room.d * 0.8, room.w - 0.4), shadeHex(p.floor, -20));
+      const sconce = new THREE.PointLight('#ffe6c2', 5, 4, 2);
+      sconce.position.set(cx, room.h - 0.4, cz); group.add(sconce);
+      break;
+    }
+    case 'storage': {
+      shelfRack(cx, room.z + 0.5, 0, Math.min(room.w * 0.8, 3));
+      break;
+    }
+    // Any room style the app doesn't have a specific archetype for yet
+    // (a new StylePreset, a debug fixture, an unrecognized type) — render
+    // something plausible rather than an empty box.
+    default: {
+      rug(cx, cz, Math.min(3, room.w * 0.6), Math.min(2.2, room.d * 0.6), shadeHex(p.floor, -20));
+      table(cx, cz, Math.min(1.1, room.w * 0.3), Math.min(0.7, room.d * 0.3));
+      break;
+    }
   }
   // tiny deterministic scatter so rooms don't feel copy-pasted
-  if (rand() > 0.5 && room.w > 4 && !['deck', 'studio'].includes(room.style)) {
+  if (rand() > 0.5 && room.w > 4 && !['deck', 'studio', 'hall'].includes(room.style)) {
     plant(room.x + room.w - 0.55, room.z + room.d - 0.55);
   }
 }
@@ -450,8 +483,7 @@ function shadeHex(hex, amt) {
 
 // ------------------------------------------------------------ scene build
 
-function buildScene(listing) {
-  const fp = listing.floorplan;
+function buildScene(listing, fp) {
   const rooms = fp.rooms;
   const b = planBounds(rooms);
   const p = listing.palette;
@@ -754,21 +786,22 @@ export function openTour(listing, opts = {}) {
   renderer.toneMappingExposure = 1.3;
   wrap.appendChild(renderer.domElement);
 
-  const { scene, ceilings, bounds } = buildScene(listing);
+  const fp = resolveFloorplan(listing);
+  const { scene, ceilings, bounds } = buildScene(listing, fp);
   const camera = new THREE.PerspectiveCamera(70, wrap.clientWidth / wrap.clientHeight, 0.05, 300);
   camera.rotation.order = 'YXZ';
 
-  const spawnRoom = listing.floorplan.rooms[0];
+  const spawnRoom = fp.rooms[0];
   const controls = setupControls(renderer.domElement);
 
   ctx = {
-    listing, renderer, scene, camera, ceilings, bounds, controls,
+    listing, fp, renderer, scene, camera, ceilings, bounds, controls,
     mode: 'walk',
     x: spawnRoom.x + spawnRoom.w / 2, z: spawnRoom.z + spawnRoom.d / 2,
     yaw: Math.PI * 0.75, pitch: 0, fov: 70,
     vel: { x: 0, z: 0 }, crouch: false,
     orbitTheta: -0.7, orbitPhi: 0.9, orbitR: Math.max(bounds.w, bounds.d) * 1.25,
-    fly: null, flyPath: buildFlyPath(listing, bounds),
+    fly: null, flyPath: buildFlyPath(fp, bounds),
     measure: { on: false, pts: [], group: new THREE.Group(), ray: new THREE.Raycaster() },
     raf: 0, lastT: performance.now(),
   };
@@ -777,7 +810,7 @@ export function openTour(listing, opts = {}) {
   // room jump chips
   const roomsBar = document.getElementById('tour-rooms');
   roomsBar.innerHTML = '';
-  for (const r of listing.floorplan.rooms) {
+  for (const r of fp.rooms) {
     const btn = document.createElement('button');
     btn.textContent = r.name;
     btn.onclick = () => {
@@ -807,8 +840,8 @@ export function openTour(listing, opts = {}) {
 // ------------------------------------------------------- cinematic flythrough
 // A keyframed camera path: a high exterior orbit that dives to the entrance,
 // then glides through the room centers at eye level. Catmull-Rom smoothed.
-function buildFlyPath(listing, b) {
-  const rooms = listing.floorplan.rooms;
+function buildFlyPath(fp, b) {
+  const rooms = fp.rooms;
   const pts = [], looks = [];
   const R = Math.max(b.w, b.d);
   // opening exterior sweep
@@ -955,7 +988,7 @@ function loop() {
     const smooth = 1 - Math.pow(0.0025, dt); // frame-rate independent lerp
     ctx.vel.x += (tvx - ctx.vel.x) * smooth;
     ctx.vel.z += (tvz - ctx.vel.z) * smooth;
-    const fp = ctx.listing.floorplan;
+    const fp = ctx.fp;
     const wx = ctx.vel.x * dt, wz = ctx.vel.z * dt;
     if (canStand(ctx.x + wx, ctx.z, fp)) ctx.x += wx; else ctx.vel.x = 0;
     if (canStand(ctx.x, ctx.z + wz, fp)) ctx.z += wz; else ctx.vel.z = 0;
@@ -971,7 +1004,7 @@ function loop() {
       document.getElementById('tour-lens').textContent = `~${mm}mm · FOV ${Math.round(camera.fov)}°`;
     }
     drawMinimap(document.getElementById('tour-minimap'),
-      ctx.listing.floorplan, ctx.bounds, ctx.x, ctx.z, ctx.yaw);
+      ctx.fp, ctx.bounds, ctx.x, ctx.z, ctx.yaw);
   } else {
     const { bounds } = ctx;
     const phi = ctx.mode === 'plan' ? 0.14 : ctx.orbitPhi;
