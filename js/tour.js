@@ -18,6 +18,11 @@ import { UnrealBloomPass } from '/vendor/three/jsm/postprocessing/UnrealBloomPas
 import { ShaderPass } from '/vendor/three/jsm/postprocessing/ShaderPass.js';
 import { OutputPass } from '/vendor/three/jsm/postprocessing/OutputPass.js';
 import { FXAAShader } from '/vendor/three/jsm/shaders/FXAAShader.js';
+import { mergeGeometries } from '/vendor/three/jsm/utils/BufferGeometryUtils.js';
+import { MeshBVH, computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
+
+THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
+THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 
 // No real HDR file to load (this build has no outbound network access to
 // fetch one) — RectAreaLightUniformsLib.init() and a procedural PMREM
@@ -34,6 +39,12 @@ const CROUCH_EYE = 1.02;
 const TOUR_EXPOSURE = 1.3;
 
 let ctx = null; // active tour context
+
+// Read-only introspection for the debug route and Part 3's FPS overlay —
+// no behavior depends on this, safe to leave in.
+if (typeof window !== 'undefined') {
+  window.__tourDebug = { pos: () => ctx ? { x: ctx.x, z: ctx.z, mode: ctx.mode } : null };
+}
 
 // ---------------------------------------------------------------- utilities
 
@@ -570,7 +581,12 @@ function buildScene(listing, fp) {
   ground.receiveShadow = true;
   scene.add(ground);
 
-  // walls
+  // walls — every solid piece also gets pushed into collisionGeos (already
+  // in world space via .translate(), so a straight merge is enough) for
+  // the BVH collider built below. Door openings are genuinely absent from
+  // this geometry (applyDoors already cut them out), not flagged/ignored,
+  // so collision against it is exact rather than approximated.
+  const collisionGeos = [];
   const segments = computeWallSegments(rooms);
   const { pieces, lintels } = applyDoors(segments, fp.doors);
   for (const w of pieces) {
@@ -582,6 +598,7 @@ function buildScene(listing, fp) {
     m.position.set(w.dir === 'h' ? mid : w.c, w.h / 2, w.dir === 'h' ? w.c : mid);
     m.castShadow = true; m.receiveShadow = true;
     scene.add(m);
+    collisionGeos.push(geo.clone().translate(m.position.x, m.position.y, m.position.z));
   }
   for (const l of lintels) {
     const len = l.a2 - l.a1, mid = (l.a1 + l.a2) / 2, h = l.y2 - l.y1;
@@ -592,6 +609,8 @@ function buildScene(listing, fp) {
     m.position.set(l.dir === 'h' ? mid : l.c, (l.y1 + l.y2) / 2, l.dir === 'h' ? l.c : mid);
     m.castShadow = true; m.receiveShadow = true;
     scene.add(m);
+    // lintels sit above DOOR_H — irrelevant to a ~1.7m-tall player capsule,
+    // skipped from collision on purpose (not an oversight).
   }
 
   // baseboard + door-frame trim, derived from the same wall/door geometry
@@ -614,24 +633,37 @@ function buildScene(listing, fp) {
     const jambH = DOOR_H + FRAME_W * 0.5;
     if (d.dir === 'v') {
       for (const side of [-1, 1]) {
-        const jamb = new THREE.Mesh(new THREE.BoxGeometry(FRAME_W, jambH, FRAME_W), trimMat);
+        const jambGeo = new THREE.BoxGeometry(FRAME_W, jambH, FRAME_W);
+        const jamb = new THREE.Mesh(jambGeo, trimMat);
         jamb.position.set(d.x, jambH / 2, d.z + side * (d.width / 2));
         jamb.castShadow = true; scene.add(jamb);
+        collisionGeos.push(jambGeo.clone().translate(jamb.position.x, jamb.position.y, jamb.position.z));
       }
       const head = new THREE.Mesh(new THREE.BoxGeometry(FRAME_W, FRAME_W, d.width + FRAME_W), trimMat);
       head.position.set(d.x, DOOR_H + FRAME_W / 2, d.z);
       scene.add(head);
     } else {
       for (const side of [-1, 1]) {
-        const jamb = new THREE.Mesh(new THREE.BoxGeometry(FRAME_W, jambH, FRAME_W), trimMat);
+        const jambGeo = new THREE.BoxGeometry(FRAME_W, jambH, FRAME_W);
+        const jamb = new THREE.Mesh(jambGeo, trimMat);
         jamb.position.set(d.x + side * (d.width / 2), jambH / 2, d.z);
         jamb.castShadow = true; scene.add(jamb);
+        collisionGeos.push(jambGeo.clone().translate(jamb.position.x, jamb.position.y, jamb.position.z));
       }
       const head = new THREE.Mesh(new THREE.BoxGeometry(d.width + FRAME_W, FRAME_W, FRAME_W), trimMat);
       head.position.set(d.x, DOOR_H + FRAME_W / 2, d.z);
       scene.add(head);
     }
   }
+
+  // Collision BVH — a real accelerated structure over the actual wall/jamb
+  // solids (see the collisionGeos.push() calls above), not an approximation
+  // of them. Works unchanged for non-rectangular aggregate footprints or
+  // any future non-axis-aligned geometry, since it's built from the real
+  // meshes rather than per-room bounding boxes.
+  const collisionGeometry = mergeGeometries(collisionGeos, false);
+  collisionGeometry.computeBoundsTree();
+  const collisionBVH = new MeshBVH(collisionGeometry);
 
   // floors, ceilings, windows, skylights, furniture, labels, room lights
   const winTex = getWindowTexture(preset.windowMullion);
@@ -769,25 +801,67 @@ function buildScene(listing, fp) {
     }
   }
 
-  return { scene, ceilings, bounds: b };
+  for (const g of collisionGeos) g.dispose();
+
+  return { scene, ceilings, bounds: b, collisionBVH };
 }
 
 // ------------------------------------------------------------- collision
 
-function canStand(x, z, fp) {
-  const M = 0.32;
-  for (const r of fp.rooms) {
-    if (x > r.x + M && x < r.x + r.w - M && z > r.z + M && z < r.z + r.d - M) return true;
-  }
-  for (const d of fp.doors) {
-    const hw = d.width / 2 - 0.18;
-    if (d.dir === 'v') {
-      if (Math.abs(x - d.x) < 0.6 && z > d.z - hw && z < d.z + hw) return true;
-    } else {
-      if (Math.abs(z - d.z) < 0.6 && x > d.x - hw && x < d.x + hw) return true;
+// Resolves horizontal movement against the wall/jamb BVH (see collisionBVH
+// in buildScene) by sampling two heights — near-floor and near-torso — and
+// pushing the player out of anything the sample sphere penetrates. This
+// replaces the old per-room bounding-box canStand(): it queries the actual
+// wall/jamb solids rather than assuming every room is a clean rectangle,
+// so it stays correct if a future floorplan ever has non-axis-aligned or
+// non-rectangular walls, not just the ones this generator currently makes.
+const PLAYER_RADIUS = 0.3;
+const _cpPoint = new THREE.Vector3();
+const _cpTarget = {};
+function resolveCollision(bvh, x, z, eyeHeight) {
+  let px = x, pz = z;
+  for (let iter = 0; iter < 3; iter++) {
+    for (const y of [0.4, Math.min(eyeHeight, 1.5)]) {
+      _cpPoint.set(px, y, pz);
+      const hit = bvh.closestPointToPoint(_cpPoint, _cpTarget, 0, PLAYER_RADIUS);
+      if (!hit) continue;
+      const dx = px - hit.point.x, dz = pz - hit.point.z;
+      const horizDist = Math.hypot(dx, dz);
+      if (horizDist < PLAYER_RADIUS && horizDist > 1e-5) {
+        const push = PLAYER_RADIUS - horizDist;
+        px += (dx / horizDist) * push;
+        pz += (dz / horizDist) * push;
+      }
     }
   }
-  return false;
+  return { x: px, z: pz };
+}
+
+// Independent reachability check — floods the room-adjacency graph implied
+// by fp.doors (which room each door actually connects, sampled directly
+// from room bounds either side of it) rather than trusting the generator's
+// own construction guarantee. Never blocks opening the tour, just warns —
+// a broken layout should still be explorable, not fail outright.
+function validateReachability(fp) {
+  const rooms = fp.rooms;
+  if (!rooms.length) return;
+  const roomAt = (x, z) => rooms.findIndex(r =>
+    x > r.x - 0.05 && x < r.x + r.w + 0.05 && z > r.z - 0.05 && z < r.z + r.d + 0.05);
+  const adj = rooms.map(() => new Set());
+  for (const d of fp.doors) {
+    const [n1, n2] = d.dir === 'v'
+      ? [{ x: d.x - 0.3, z: d.z }, { x: d.x + 0.3, z: d.z }]
+      : [{ x: d.x, z: d.z - 0.3 }, { x: d.x, z: d.z + 0.3 }];
+    const a = roomAt(n1.x, n1.z), b = roomAt(n2.x, n2.z);
+    if (a >= 0 && b >= 0 && a !== b) { adj[a].add(b); adj[b].add(a); }
+  }
+  const seen = new Set([0]), queue = [0];
+  while (queue.length) {
+    const cur = queue.pop();
+    for (const next of adj[cur]) if (!seen.has(next)) { seen.add(next); queue.push(next); }
+  }
+  const unreachable = rooms.filter((_, i) => !seen.has(i)).map(r => r.name);
+  if (unreachable.length) console.warn('[tour] unreachable from spawn:', unreachable);
 }
 
 // --------------------------------------------------------------- controls
@@ -954,7 +1028,8 @@ export function openTour(listing, opts = {}) {
   wrap.appendChild(renderer.domElement);
 
   const fp = resolveFloorplan(listing);
-  const { scene, ceilings, bounds } = buildScene(listing, fp);
+  validateReachability(fp);
+  const { scene, ceilings, bounds, collisionBVH } = buildScene(listing, fp);
 
   // Procedural PMREM environment (see the RoomEnvironment import note
   // above) — gives every MeshStandardMaterial/RectAreaLight in the scene
@@ -971,7 +1046,7 @@ export function openTour(listing, opts = {}) {
   const controls = setupControls(renderer.domElement);
 
   ctx = {
-    listing, fp, renderer, scene, camera, ceilings, bounds, controls, pmrem, composer,
+    listing, fp, renderer, scene, camera, ceilings, bounds, controls, pmrem, composer, collisionBVH,
     mode: 'walk',
     x: spawnRoom.x + spawnRoom.w / 2, z: spawnRoom.z + spawnRoom.d / 2,
     yaw: Math.PI * 0.75, pitch: 0, fov: 70,
@@ -1168,10 +1243,15 @@ function loop() {
     const smooth = 1 - Math.pow(0.0025, dt); // frame-rate independent lerp
     ctx.vel.x += (tvx - ctx.vel.x) * smooth;
     ctx.vel.z += (tvz - ctx.vel.z) * smooth;
-    const fp = ctx.fp;
     const wx = ctx.vel.x * dt, wz = ctx.vel.z * dt;
-    if (canStand(ctx.x + wx, ctx.z, fp)) ctx.x += wx; else ctx.vel.x = 0;
-    if (canStand(ctx.x, ctx.z + wz, fp)) ctx.z += wz; else ctx.vel.z = 0;
+    const wantX = ctx.x + wx, wantZ = ctx.z + wz;
+    const resolved = resolveCollision(ctx.collisionBVH, wantX, wantZ, ctx.eye ?? EYE);
+    // Bleed velocity on the axis a wall actually blocked, rather than
+    // zeroing both — keeps sliding along a wall you're moving into at an
+    // angle instead of stopping dead.
+    if (Math.abs(resolved.x - wantX) > 1e-4) ctx.vel.x *= 0.15;
+    if (Math.abs(resolved.z - wantZ) > 1e-4) ctx.vel.z *= 0.15;
+    ctx.x = resolved.x; ctx.z = resolved.z;
 
     const eye = ctx.crouch ? CROUCH_EYE : EYE;
     ctx.eye = (ctx.eye ?? EYE) + (eye - (ctx.eye ?? EYE)) * Math.min(1, dt * 10);
@@ -1214,6 +1294,8 @@ export function closeTour() {
     });
   });
   ctx.pmrem.dispose();
+  ctx.collisionBVH.geometry.disposeBoundsTree();
+  ctx.collisionBVH.geometry.dispose();
   ctx.composer.dispose();
   ctx.renderer.dispose();
   ctx.renderer.domElement.remove();
