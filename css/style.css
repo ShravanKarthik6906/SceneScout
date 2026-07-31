@@ -107,8 +107,15 @@
   --amber: #c1493a;      /* grease-pencil red — primary */
   --teal: #5a828f;       /* blueprint slate-teal — secondary/map linework */
   --sun-gold: #c89b3c;   /* sparing highlight only */
-  --paper: #ede6d6;      /* lit paper — index card & filmstrip frames only */
+  --paper: #ede6d6;      /* lit paper — filmstrip photo frames only */
   --ink: #23201c;        /* dark ink — text on the paper surfaces above */
+  /* the search/filter panel is a physical clapperboard, not a paper card —
+     neutral charcoal (cooler than --bg's warm brown-black) so it reads as
+     chalkboard/molded-plastic material, not aged wood. */
+  --slate-body: #1c1c1c;
+  --slate-inset: #131313;   /* recessed fields sitting in the slate */
+  --slate-line: rgba(255, 255, 255, 0.14); /* chalk-ruled field dividers */
+  --chalk: #e9e7e1;
   --grain-opacity: 0.06;
   --letterbox: 28px;
   --font-display: 'Special Elite', 'Courier New', monospace;
@@ -337,6 +344,12 @@ header .spacer {
 
 /* the floating index card — rotated slightly like a real card set down on
    a desk, torn top edge via clip-path, paper-settle on load. */
+/* A film slate, not a notepad — matte charcoal body with a hinged clap-
+   stick across the top (see .slate-stick below). Rounded + slightly
+   beveled so it reads as a molded physical object sitting on the desk,
+   not a flat panel. The outer rim-light + shadow stack exists specifically
+   to keep the panel's edge separated from a dark satellite map behind it
+   — dark-on-dark losing the edge entirely was the main risk here. */
 #sidebar {
   position: absolute;
   top: 18px;
@@ -346,37 +359,105 @@ header .spacer {
   max-width: calc(100vw - 36px);
   max-height: calc(100% - 170px);
   overflow-y: auto;
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
-  background: var(--paper);
-  color: var(--ink);
-  /* Everything nested in the index card sits on lit paper, not the dark
-     environment — redefine the surface tokens locally so every existing
-     rule that reads var(--panel-2)/var(--line)/var(--text)/var(--muted)
-     (search box, filter chips, dropdowns, sliders) picks up paper-
-     appropriate values automatically via cascade, with zero changes
-     needed to those individual rules. */
-  --panel-2: #e4dbc5;
-  --line: rgba(35, 32, 28, 0.2);
-  --text: var(--ink);
-  --muted: #7d7360;
-  border-radius: 2px;
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.35);
-  transform: rotate(-0.7deg);
-  clip-path: polygon(
-    0% 3%, 4% 0%, 9% 2%, 14% 0%, 19% 2.5%, 24% 0.5%, 30% 2%, 36% 0%, 42% 1.5%,
-    48% 0%, 54% 2%, 60% 0.5%, 66% 2.5%, 72% 0%, 78% 2%, 84% 0%, 90% 2%, 95% 0%, 100% 3%,
-    100% 100%, 0% 100%
-  );
-  padding-top: 10px;
-  animation: paper-settle 0.35s ease-out;
+  background: var(--slate-body);
+  color: var(--chalk);
+  /* Everything nested in the slate reads off these locally-redefined
+     surface tokens rather than the app's general dark-environment ones —
+     every existing rule using var(--panel-2)/var(--line)/var(--text)/
+     var(--muted) (search box, filter chips, dropdowns, sliders) picks up
+     slate-appropriate values automatically via cascade. */
+  --panel-2: var(--slate-inset);
+  --line: var(--slate-line);
+  --text: var(--chalk);
+  --muted: #a39d8e;
+  border-radius: 9px;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.05),   /* rim light: separates the edge from a dark map */
+    0 0 26px rgba(0, 0, 0, 0.35),          /* soft outer glow/halo */
+    0 18px 38px rgba(0, 0, 0, 0.6),        /* drop shadow: physical lift off the desk */
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),  /* bevel: light catching the top edge */
+    inset 0 -3px 6px rgba(0, 0, 0, 0.45);     /* bevel: shadow pooling at the bottom edge */
+  animation: slate-settle 0.3s ease-out;
 }
-@keyframes paper-settle {
-  from { opacity: 0; transform: rotate(-0.7deg) translateY(-3px); }
-  to { opacity: 1; transform: rotate(-0.7deg) translateY(0); }
+@keyframes slate-settle {
+  from { opacity: 0; transform: translateY(-6px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 @media (prefers-reduced-motion: reduce) {
   #sidebar { animation: none; }
+}
+
+/* Chalk dust / scuff texture — a second noise layer (independent of the
+   page-wide film-grain in body::after) plus a few soft smudge blotches,
+   scoped to the slate body only via ::before so it doesn't tint the
+   fields/text sitting above it (z-index 0, content sits at the default
+   stacking context above via each child being a normal in-flow box). */
+#sidebar::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0.5;
+  mix-blend-mode: overlay;
+  background-image:
+    radial-gradient(ellipse 90px 50px at 15% 20%, rgba(255, 255, 255, 0.05), transparent 70%),
+    radial-gradient(ellipse 120px 60px at 85% 70%, rgba(255, 255, 255, 0.04), transparent 70%),
+    radial-gradient(ellipse 70px 90px at 70% 15%, rgba(255, 255, 255, 0.035), transparent 70%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+#sidebar > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Clap-stick: the hinged top piece of a real clapperboard, replacing the
+   old torn-paper edge. Multiple gradient stops at uneven widths (24/3,
+   24/3 rather than a clean 50/50 repeat) fake a hand-painted stripe run
+   instead of a vector-perfect one; the turbulence overlay adds visible
+   wear. Clap animation triggers via .clapping, toggled from app.js on
+   search submit — snaps from the bottom hinge point, not a generic wobble. */
+.slate-stick {
+  height: 30px;
+  flex: 0 0 auto;
+  border-radius: 9px 9px 0 0;
+  overflow: hidden;
+  transform-origin: bottom center;
+  background: repeating-linear-gradient(
+    -38deg,
+    #efe9da 0, #efe9da 23px,
+    #1a1a1a 23px, #1a1a1a 26px,
+    #201f1d 26px, #201f1d 49px,
+    #1a1a1a 49px, #1a1a1a 52px
+  );
+  box-shadow: inset 0 -2px 4px rgba(0, 0, 0, 0.5), inset 0 2px 0 rgba(255, 255, 255, 0.08);
+}
+.slate-stick::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0.22;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='40'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.slate-stick.clapping {
+  animation: slate-clap 0.18s ease-out;
+}
+@keyframes slate-clap {
+  0% { transform: scaleY(1) translateY(0); }
+  30% { transform: scaleY(0.7) translateY(3px); }
+  60% { transform: scaleY(1.06) translateY(-1px); }
+  100% { transform: scaleY(1) translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .slate-stick.clapping { animation: none; }
+}
+@media (max-width: 480px) {
+  .slate-stick { height: 22px; }
 }
 
 #map {
@@ -616,13 +697,20 @@ header .spacer {
   gap: 9px;
 }
 
+/* SCENE is the largest, top-left field on the slate — the way a real
+   clapperboard gives the scene number the most room of any ruled field.
+   Chalk-white with a soft blur (text-shadow) for a hand-chalked look, thin
+   rule line beneath matching a real slate's ruled fields. */
 .ai-label {
   font-family: var(--font-display);
-  font-size: 11px;
+  font-size: 15px;
   text-transform: uppercase;
-  letter-spacing: 1.4px;
+  letter-spacing: 2px;
   font-weight: 400;
-  color: var(--muted);
+  color: var(--chalk);
+  text-shadow: 0 0 3px rgba(255, 255, 255, 0.22);
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--slate-line);
 }
 
 .ai-box {
@@ -634,19 +722,22 @@ header .spacer {
 
 /* Framed like a slate strip, not a rounded search box: a solid amber
    marking-stripe across the top edge, sharp mechanical corners below. */
+/* A recessed ruled field on the slate now, not its own mini-stripe — the
+   panel's own clap-stick already carries that motif, so a second amber
+   stripe here would be redundant. Monospace per the brief: only labels
+   get the chalk treatment, input text stays legible/functional. */
 #ai-input {
   width: 100%;
   resize: vertical;
   min-height: 52px;
   background: var(--panel-2);
   border: 1px solid var(--line);
-  border-top: 3px solid var(--amber);
   color: var(--text);
-  border-radius: 0 0 3px 3px;
+  border-radius: 3px;
   padding: 10px 11px;
-  font: inherit;
-  font-size: 13px;
-  line-height: 1.45;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
   transition: border-color 0.15s ease;
 }
 
@@ -655,6 +746,9 @@ header .spacer {
   border-color: var(--amber);
 }
 
+/* The slate's action element — a stamped/pressed feel (inset bevel)
+   rather than a flat web-app button, matching the panel's physical-object
+   treatment. */
 #ai-go {
   font-family: var(--font-display);
   justify-self: end;
@@ -668,42 +762,12 @@ header .spacer {
   padding: 8px 16px;
   font-size: 12.5px;
   cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), inset 0 -2px 3px rgba(0, 0, 0, 0.25);
   transition: filter 0.15s ease;
 }
 
 #ai-go:hover {
   filter: brightness(1.1);
-}
-
-.ai-examples {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-
-/* Suggested briefs read as scene sluglines — monospace, like a
-   screenwriting slugline (INT./EXT. — LOCATION — TIME), not a search
-   suggestion pill. */
-.ex-chip {
-  font-family: var(--font-mono);
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  color: var(--muted);
-  border-radius: 2px;
-  padding: 4px 9px;
-  font-size: 10.5px;
-  letter-spacing: 0.2px;
-  cursor: pointer;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: left;
-}
-
-.ex-chip:hover {
-  border-color: var(--amber);
-  color: var(--text);
 }
 
 .ai-interpreted {
@@ -761,7 +825,8 @@ header .spacer {
   text-transform: uppercase;
   letter-spacing: 1.2px;
   font-weight: 400;
-  color: var(--muted);
+  color: var(--chalk);
+  text-shadow: 0 0 2px rgba(255, 255, 255, 0.18);
   user-select: none;
 }
 
@@ -825,6 +890,8 @@ header .spacer {
   gap: 11px;
 }
 
+/* Each filter is a discrete ruled field — like a slate's scene/take/
+   director boxes — not a plain stacked label-over-input form row. */
 .filter-row {
   display: grid;
   gap: 5px;
@@ -832,13 +899,16 @@ header .spacer {
 
 .filter-row label {
   font-family: var(--font-display);
-  font-size: 11px;
+  font-size: 10.5px;
   text-transform: uppercase;
-  letter-spacing: 1.1px;
+  letter-spacing: 1px;
   font-weight: 400;
-  color: var(--muted);
+  color: var(--chalk);
+  text-shadow: 0 0 2px rgba(255, 255, 255, 0.18);
   display: flex;
   justify-content: space-between;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--slate-line);
 }
 
 /* readout values (radius, sqft, budget) — monospace, HUD-style. */
@@ -848,12 +918,21 @@ header .spacer {
   font-weight: 500;
   text-transform: none;
   letter-spacing: 0;
+  text-shadow: none;
 }
 
 .filter-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 11px;
+}
+
+/* vertical rule between the two ruled fields in a row, like a slate's
+   column dividers — only where there are actually two fields side by
+   side, not a stray line on single-field rows. */
+.filter-grid > .filter-row:first-child {
+  padding-right: 11px;
+  border-right: 1px solid var(--slate-line);
 }
 
 select,

@@ -31,13 +31,16 @@
 
   <div id="layout">
     <aside id="sidebar">
+      <!-- clapperboard clap-stick — purely decorative, aria-hidden — see
+           .slate-stick in css/style.css for the diagonal-stripe treatment
+           and the clap-on-search animation triggered from app.js. -->
+      <div class="slate-stick" id="slate-stick" aria-hidden="true"></div>
       <section id="ai-search">
-        <label class="ai-label">Describe the location you need</label>
+        <label class="ai-label">Scene</label>
         <div class="ai-box">
           <textarea id="ai-input" rows="2" placeholder="e.g. Modern industrial warehouse with large windows near downtown Chicago under $500/day"></textarea>
           <button id="ai-go" title="Interpret with AI">Search ✨</button>
         </div>
-        <div id="ai-examples" class="ai-examples"></div>
         <div id="ai-interpreted" class="ai-interpreted hidden"></div>
       </section>
 

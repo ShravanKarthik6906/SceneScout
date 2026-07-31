@@ -88,13 +88,6 @@ const state = {
   hasSearched: false, // true once the user runs an AI search or picks a type filter — the map/results start empty, not pre-loaded with the full catalog
 };
 
-const EXAMPLES = [
-  'Modern industrial warehouse with large windows near downtown Chicago',
-  'Victorian mansion with formal gardens, under $800/day',
-  'Coffee shop with warm lighting and exposed brick in Austin',
-  'Blackout sound stage that fits a crew of 40 in Atlanta',
-  'Bright mid-century house with walls of glass in Seattle',
-];
 
 // -------------------------------------------------------- immersive modes
 // Retracts the letterbox bars when the user enters any full-viewport or
@@ -921,18 +914,24 @@ async function handleGlobeClick(lat, lng) {
 // -------------------------------------------------------------------- init
 function initAISearch() {
   const input = document.getElementById('ai-input');
-  const go = () => { playIrisTransition(); runAISearch(input.value); };
+  const go = () => { playClapAnimation(); playIrisTransition(); runAISearch(input.value); };
   document.getElementById('ai-go').onclick = go;
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go(); }
   });
-  const ex = document.getElementById('ai-examples');
-  for (const text of EXAMPLES) {
-    const b = document.createElement('button');
-    b.className = 'ex-chip'; b.textContent = text;
-    b.onclick = () => { input.value = text; playIrisTransition(); runAISearch(text); };
-    ex.appendChild(b);
-  }
+}
+
+// The clap-stick "snaps down and back" on search submit — a real
+// clapperboard's own action, not a generic click ripple. CSS-only
+// keyframe (see .slate-stick.clapping in css/style.css); this just
+// re-triggers it by removing/re-adding the class, since a class already
+// present won't restart a CSS animation on its own.
+function playClapAnimation() {
+  const stick = document.getElementById('slate-stick');
+  if (!stick) return;
+  stick.classList.remove('clapping');
+  void stick.offsetWidth; // force reflow so the removal actually takes effect first
+  stick.classList.add('clapping');
 }
 
 function initFilters() {
