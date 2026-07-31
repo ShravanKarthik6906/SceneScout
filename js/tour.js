@@ -9,6 +9,7 @@
 
 import * as THREE from 'three';
 import { generateFloorplan, hashStr, mulberry32 } from './floorplanGen.js';
+import { resolvePreset, colorTempToHex } from './stylePresets.js';
 
 const WALL_T = 0.16;
 const DOOR_H = 2.1;
@@ -132,9 +133,12 @@ function addCyl(group, rt, rb, h, material, x, y, z, seg = 14) {
   return m;
 }
 
-let windowTexture = null;
-function getWindowTexture() {
-  if (windowTexture) return windowTexture;
+// Mullion pattern is preset-driven (see stylePresets.js's windowMullion) —
+// a steel-sash industrial window reads very differently from a minimal
+// contemporary pane, purely from how the frame lines are drawn here.
+const windowTextures = {};
+function getWindowTexture(style = 'grid') {
+  if (windowTextures[style]) return windowTextures[style];
   const c = document.createElement('canvas');
   c.width = 128; c.height = 160;
   const g = c.getContext('2d');
@@ -144,11 +148,30 @@ function getWindowTexture() {
   grad.addColorStop(1, '#e8d9b8');
   g.fillStyle = grad; g.fillRect(0, 0, 128, 160);
   g.fillStyle = 'rgba(30,34,44,0.9)';
-  g.fillRect(60, 0, 8, 160); g.fillRect(0, 76, 128, 8);
-  g.strokeStyle = 'rgba(30,34,44,0.9)'; g.lineWidth = 12;
-  g.strokeRect(0, 0, 128, 160);
-  windowTexture = new THREE.CanvasTexture(c);
-  return windowTexture;
+  g.strokeStyle = 'rgba(30,34,44,0.9)';
+
+  if (style === 'minimal') {
+    g.lineWidth = 6;
+    g.strokeRect(3, 3, 122, 154);
+  } else if (style === 'curtainWall') {
+    g.lineWidth = 8;
+    for (let x = 0; x <= 128; x += 32) { g.fillRect(x - 3, 0, 6, 160); }
+    g.strokeRect(0, 0, 128, 160);
+  } else if (style === 'steelSash') {
+    g.lineWidth = 5;
+    for (let y = 0; y < 4; y++) g.fillRect(0, y * 40 - 2, 128, 5);
+    g.fillRect(60, 0, 6, 160);
+    g.strokeStyle = 'rgba(20,22,28,0.95)'; g.lineWidth = 10;
+    g.strokeRect(0, 0, 128, 160);
+  } else { // 'grid' — original default
+    g.fillRect(60, 0, 8, 160); g.fillRect(0, 76, 128, 8);
+    g.lineWidth = 12;
+    g.strokeRect(0, 0, 128, 160);
+  }
+
+  const tex = new THREE.CanvasTexture(c);
+  windowTextures[style] = tex;
+  return tex;
 }
 
 function makeLabelSprite(text) {
@@ -172,7 +195,7 @@ function makeLabelSprite(text) {
 
 // ------------------------------------------------------------- furnishings
 
-function furnish(group, room, listing, rand) {
+function furnish(group, room, listing, rand, density = 1) {
   const p = listing.palette;
   const cx = room.x + room.w / 2, cz = room.z + room.d / 2;
   const wood = mat('#6b4f35'), dark = mat('#23262e'), lightGray = mat('#c9cdd4');
@@ -468,7 +491,7 @@ function furnish(group, room, listing, rand) {
     }
   }
   // tiny deterministic scatter so rooms don't feel copy-pasted
-  if (rand() > 0.5 && room.w > 4 && !['deck', 'studio', 'hall'].includes(room.style)) {
+  if (rand() > 1 - 0.5 * density && room.w > 4 && !['deck', 'studio', 'hall'].includes(room.style)) {
     plant(room.x + room.w - 0.55, room.z + room.d - 0.55);
   }
 }
@@ -488,12 +511,13 @@ function buildScene(listing, fp) {
   const b = planBounds(rooms);
   const p = listing.palette;
   const outdoor = !!listing.outdoor;
+  const preset = resolvePreset(listing);
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(outdoor ? '#141b2a' : '#0b0d13');
   scene.fog = new THREE.Fog(scene.background, 40, 120);
 
-  const wallMat = mat(p.wall);
+  const wallMat = mat(p.wall, preset.wallFinish);
   const floorMats = {};
   const ceilings = new THREE.Group();
 
@@ -531,11 +555,11 @@ function buildScene(listing, fp) {
   }
 
   // floors, ceilings, windows, skylights, furniture, labels, room lights
-  const winTex = getWindowTexture();
+  const winTex = getWindowTexture(preset.windowMullion);
   const rand = mulberry32(hashStr(listing.id));
   for (const r of rooms) {
     const fkey = r.style === 'studio' || r.style === 'gallery' ? '#e8e8e6' : p.floor;
-    if (!floorMats[fkey]) floorMats[fkey] = mat(fkey, { roughness: 0.75 });
+    if (!floorMats[fkey]) floorMats[fkey] = mat(fkey, preset.floorFinish);
     const fl = new THREE.Mesh(new THREE.PlaneGeometry(r.w, r.d), floorMats[fkey]);
     fl.rotation.x = -Math.PI / 2;
     fl.position.set(r.x + r.w / 2, 0, r.z + r.d / 2);
@@ -593,7 +617,7 @@ function buildScene(listing, fp) {
       scene.add(rl);
     }
 
-    furnish(scene, r, listing, rand);
+    furnish(scene, r, listing, rand, preset.furnitureDensity);
 
     const label = makeLabelSprite(r.name);
     label.position.set(r.x + r.w / 2, Math.min(r.h - 0.35, 2.45), r.z + r.d / 2);
@@ -602,10 +626,14 @@ function buildScene(listing, fp) {
   }
   scene.add(ceilings);
 
-  // global lighting
-  const hemi = new THREE.HemisphereLight('#bfd4ff', '#4a3f36', outdoor ? 1.4 : 0.95);
+  // global lighting — color temperature and intensity come from the
+  // resolved StylePreset rather than being fixed for every scene; the
+  // outdoor multiplier on top preserves exteriors reading brighter than
+  // interiors regardless of which preset a listing resolved to.
+  const sunColor = colorTempToHex(preset.lightTempK);
+  const hemi = new THREE.HemisphereLight('#bfd4ff', '#4a3f36', preset.hemiIntensity * (outdoor ? 1.45 : 1));
   scene.add(hemi);
-  const sun = new THREE.DirectionalLight('#ffe8c8', outdoor ? 2.4 : 1.8);
+  const sun = new THREE.DirectionalLight(sunColor, preset.sunIntensity * (outdoor ? 1.25 : 1));
   sun.position.set(b.cx + b.w, Math.max(b.w, b.d) * 0.9, b.cz + b.d * 0.6);
   sun.target.position.set(b.cx, 0, b.cz);
   sun.castShadow = true;
