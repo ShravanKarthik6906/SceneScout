@@ -8,7 +8,7 @@
 // "search to see locations" placeholder until the fetch resolves.
 let LOCATIONS = [];
 import { TYPES, CENTERS, LIGHT_LABELS } from './catalog.js';
-import { initMap, updateMap, flyToListing, fitToRadius, setSelectedMarker, clearSelectedMarker, setSatellite, isSatellite } from './map.js';
+import { initMap, updateMap, flyToListing, fitToRadius, setSelectedMarker, clearSelectedMarker, setSatellite, isSatellite, getMarkerScreenPos, focusPin } from './map.js';
 import { drawPlanThumb, drawIsoHero } from './thumbs.js';
 import { openTour } from './tour.js';
 import { DEBUG_LOCATIONS } from './floorplanGen.js';
@@ -274,22 +274,23 @@ function render() {
     </div>`;
   } else if (!results.length) {
     list.innerHTML = !state.hasSearched
-      ? `<div class="empty">Describe the location you need above, or pick a location type below, to start searching.</div>`
+      ? `<div class="empty">No locations pinned yet — describe what you need above, or pick a type below.</div>`
       : state.dynamicFeature
-      ? `<div class="empty">No ${escapeHtml(state.dynamicFeature.label.toLowerCase())} found within ${state.radiusMi} mi.<br>Widen the radius, search another city above, or try a different feature.</div>`
-      : `<div class="empty">No locations in this radius.<br>Widen the radius, search another city above, or click the map to move the center.</div>`;
+      ? `<div class="empty">No ${escapeHtml(state.dynamicFeature.label.toLowerCase())} pinned within ${state.radiusMi} mi. Widen the radius or try a different feature.</div>`
+      : `<div class="empty">No locations pinned within ${state.radiusMi} mi. Widen the radius, search another city, or click the map to move the center.</div>`;
   } else {
-    for (const loc of results) {
+    results.forEach((loc, i) => {
       const t = typeInfo(loc);
       const card = document.createElement('article');
       card.className = 'card';
       card.innerHTML = `
+        <div class="card-top">
+          <span class="frame-num">N°${String(i + 1).padStart(2, '0')}</span>
+          <span class="match" style="--pct:${loc.score}">${loc.score}%</span>
+        </div>
         <canvas width="300" height="150"></canvas>
         <div class="card-body">
-          <div class="card-top">
-            <h3>${escapeHtml(loc.name)}</h3>
-            <span class="match" style="--pct:${loc.score}">${loc.score}%</span>
-          </div>
+          <h3>${escapeHtml(loc.name)}</h3>
           <div class="card-sub">${t.icon} ${t.label} · ${escapeHtml(loc.neighborhood)}</div>
           <div class="card-stats">
             <span>${loc.sqft.toLocaleString()} ft²</span>
@@ -306,9 +307,15 @@ function render() {
         console.warn('[thumbs] drawPlanThumb failed for', loc.id, e.message);
       }
       card.onclick = () => openDetail(loc);
+      card.addEventListener('mouseenter', () => showPinString(loc.id, card));
+      card.addEventListener('mouseleave', () => hidePinString(loc.id));
       list.appendChild(card);
-    }
+    });
   }
+  // expands the filmstrip tray from its slim collapsed state (just the
+  // meta/empty line) to full photo-frame height — see #filmstrip.has-results
+  // in css/style.css.
+  document.getElementById('filmstrip').classList.toggle('has-results', results.length > 0);
 
   // Before the first search, no markers should be on the map at all — not
   // even dimmed ones — so pass an empty set rather than the full catalog.
@@ -319,6 +326,31 @@ function render() {
   // exposure-style HUD readout, top-left of the map viewport
   document.getElementById('hud-radius').textContent = `${state.radiusMi} MI`;
   document.getElementById('hud-count').textContent = `${results.length} RESULT${results.length === 1 ? '' : 'S'}`;
+}
+
+// -------------------------------------------------- pushpin<->filmstrip string
+// The signature corkboard interaction: hovering a filmstrip frame strings a
+// line to its pin on the map and pulls the pin into focus. 2D-map-only —
+// getMarkerScreenPos() returns null in 3D/globe view, where a pin has no
+// fixed screen position to draw to, and the string simply doesn't appear.
+function showPinString(id, cardEl) {
+  const pinPos = getMarkerScreenPos(id);
+  const path = document.getElementById('string-path');
+  if (!pinPos || !path) return;
+  const cardRect = cardEl.getBoundingClientRect();
+  const cardPt = { x: cardRect.left + cardRect.width / 2, y: cardRect.top };
+  // a real pinned string sags under its own weight — control point below
+  // the straight-line midpoint, not above it, for a slack-thread curve
+  // instead of an arc.
+  const midX = (pinPos.x + cardPt.x) / 2;
+  const midY = (pinPos.y + cardPt.y) / 2 + 35;
+  path.setAttribute('d', `M ${pinPos.x},${pinPos.y} Q ${midX},${midY} ${cardPt.x},${cardPt.y}`);
+  path.classList.add('active');
+  focusPin(id, true);
+}
+function hidePinString(id) {
+  document.getElementById('string-path')?.classList.remove('active');
+  focusPin(id, false);
 }
 
 // --------------------------------------------------------------- AI search
@@ -462,7 +494,6 @@ function openDetail(loc) {
   } catch (e) {
     console.warn('[thumbs] drawIsoHero failed for', loc.id, e.message);
   }
-  renderPhotos(loc);
   renderPlaceInfo(loc);
   const sv = document.getElementById('sv-panel');
   sv.classList.add('hidden'); sv.innerHTML = '';
@@ -577,57 +608,6 @@ function renderReviews(loc) {
     <div class="rev-cols">
       <div><div class="rev-h up">Strengths</div><ul>${r.positives.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul></div>
       <div><div class="rev-h down">Consider</div><ul>${r.considerations.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul></div>
-    </div>`;
-}
-
-// Real photos of the location via DuckDuckGo image search. This section
-// isn't part of the original HTML markup, so it's created on first use and
-// reused afterward rather than assuming a container id already exists.
-function getOrCreatePhotosContainer() {
-  let el = document.getElementById('detail-photos');
-  if (el) return el;
-  el = document.createElement('div');
-  el.id = 'detail-photos';
-  el.className = 'detail-photos';
-  // Insert right after the reviews section so it reads naturally in the
-  // existing modal flow; falls back to appending to the modal body if that
-  // anchor isn't found for some reason.
-  const reviews = document.getElementById('detail-reviews');
-  if (reviews && reviews.parentNode) {
-    reviews.parentNode.insertBefore(el, reviews.nextSibling);
-  } else {
-    document.querySelector('.modal')?.appendChild(el);
-  }
-  return el;
-}
-
-async function renderPhotos(loc) {
-  const el = getOrCreatePhotosContainer();
-  el.innerHTML = `<div class="section-h">Photos</div><div class="photos-loading">Searching for real photos…</div>`;
-
-  // Query by name + neighborhood/city for better hit rate than the bare name alone.
-  const query = `${loc.name} ${loc.neighborhood || ''}`.trim();
-  // Dynamic natural-feature locations carry a slug type that isn't one of
-  // catalog.js's TYPES keys — see typeInfo()'s fallback for the same check.
-  const natural = !TYPES[loc.type];
-  const photos = await fetchLocationPhotos(query, natural);
-
-  // Guard against a stale response landing after the user closed/switched
-  // to a different location's detail view.
-  if (currentLoc !== loc) return;
-
-  if (!photos.length) {
-    el.innerHTML = `<div class="section-h">Photos</div><div class="photos-empty">No photos found for this location.</div>`;
-    return;
-  }
-
-  el.innerHTML = `
-    <div class="section-h">Photos <span class="section-sub">via web image search</span></div>
-    <div class="photos-grid">
-      ${photos.map(p => `
-        <a class="photo-tile" href="${escapeHtml(p.url || p.image)}" target="_blank" rel="noopener" title="${escapeHtml(p.title || '')}">
-          <img src="${escapeHtml(p.thumbnail || p.image)}" alt="${escapeHtml(p.title || loc.name)}" loading="lazy" />
-        </a>`).join('')}
     </div>`;
 }
 
