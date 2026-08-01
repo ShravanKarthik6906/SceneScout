@@ -872,6 +872,50 @@ function collectPropCollision(root, out) {
   });
 }
 
+// Room centres are usually exactly where the furniture is, so now that props
+// are solid, spawning (or jumping via a room chip) at one can drop you inside
+// a couch. Sample the room on a grid at torso height and take the point with
+// the most clearance from any solid.
+function findClearPoint(room, bvh) {
+  const N = 7, PROBE_Y = 0.9, MAX_USEFUL = 3;
+  const target = {}, p = new THREE.Vector3();
+  let best = { x: room.x + room.w / 2, z: room.z + room.d / 2, clearance: -1 };
+  for (let i = 1; i <= N; i++) {
+    for (let j = 1; j <= N; j++) {
+      const x = room.x + (room.w * i) / (N + 1);
+      const z = room.z + (room.d * j) / (N + 1);
+      p.set(x, PROBE_Y, z);
+      const hit = bvh.closestPointToPoint(p, target, 0, MAX_USEFUL);
+      const clearance = hit ? hit.distance : MAX_USEFUL;
+      if (clearance > best.clearance) best = { x, z, clearance };
+    }
+  }
+  return best;
+}
+
+// Which way should we be facing from here? Spawning nose-to-the-wall is
+// disorienting in any walkthrough, but with click-to-move it's a dead end:
+// no floor in view means nothing to click. Sweep headings and take the one
+// with the longest clear line of sight, i.e. looking *into* the room.
+function bestHeading(x, z, bvh) {
+  const RAYS = 16, STEP = 0.5, MAX_REACH = 8, EYE_Y = 1.4, CLEARANCE = 0.45;
+  const target = {}, p = new THREE.Vector3();
+  let bestYaw = 0, bestReach = -1;
+  for (let i = 0; i < RAYS; i++) {
+    const yaw = (i / RAYS) * Math.PI * 2;
+    // camera forward at yaw is (-sin yaw, -cos yaw)
+    const dx = -Math.sin(yaw), dz = -Math.cos(yaw);
+    let reach = 0;
+    for (let s = STEP; s <= MAX_REACH; s += STEP) {
+      p.set(x + dx * s, EYE_Y, z + dz * s);
+      if (bvh.closestPointToPoint(p, target, 0, CLEARANCE)) break;
+      reach = s;
+    }
+    if (reach > bestReach) { bestReach = reach; bestYaw = yaw; }
+  }
+  return bestYaw;
+}
+
 // ------------------------------------------------------------- collision
 
 // Resolves horizontal movement against the wall/jamb BVH (see collisionBVH
@@ -1050,7 +1094,7 @@ function pointAtArc(nav, s) {
 function makeReticle() {
   const g = new THREE.Group();
   const mk = (geo) => new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
-    color: '#5aa7e8', transparent: true, opacity: 0.9, depthWrite: false,
+    color: '#e8b45a', transparent: true, opacity: 0.9, depthWrite: false,
   }));
   const ring = mk(new THREE.RingGeometry(0.3, 0.4, 36));
   const dot = mk(new THREE.CircleGeometry(0.075, 20));
@@ -1318,15 +1362,15 @@ export function openTour(listing, opts = {}) {
 
   const composer = buildComposer(renderer, scene, camera, wrap);
 
-  const spawnRoom = fp.rooms[0];
+  const spawn = findClearPoint(fp.rooms[0], collisionBVH);
   const controls = setupControls(renderer.domElement);
 
   ctx = {
     listing, fp, renderer, scene, camera, ceilings, bounds, controls, pmrem, composer, collisionBVH, sun,
     quality: 'high', showFPS: false, fpsAccum: 0, fpsFrames: 0, fpsLastUpdate: performance.now(),
     mode: 'walk',
-    x: spawnRoom.x + spawnRoom.w / 2, z: spawnRoom.z + spawnRoom.d / 2,
-    yaw: Math.PI * 0.75, pitch: 0, fov: 70, eye: EYE,
+    x: spawn.x, z: spawn.z,
+    yaw: bestHeading(spawn.x, spawn.z, collisionBVH), pitch: -0.12, fov: 70, eye: EYE,
     lookVel: { yaw: 0, pitch: 0 },
     roomGraph: buildRoomGraph(fp), nav: null, hover: null, pointer: null, reticle: makeReticle(),
     orbitTheta: -0.7, orbitPhi: 0.9, orbitR: Math.max(bounds.w, bounds.d) * 1.25,
@@ -1347,7 +1391,8 @@ export function openTour(listing, opts = {}) {
     btn.textContent = r.name;
     btn.onclick = () => {
       setMode('walk');
-      startNav(r.x + r.w / 2, r.z + r.d / 2);
+      const dest = findClearPoint(r, collisionBVH);   // not the centre — that's where the couch is
+      startNav(dest.x, dest.z);
     };
     roomsBar.appendChild(btn);
   }
@@ -1646,7 +1691,7 @@ function loop() {
       ret.position.set(ctx.hover.x, 0.03, ctx.hover.z);
       const pulse = 1 + Math.sin(now * 0.004) * 0.07;
       ret.scale.set(pulse, pulse, pulse);
-      ret.setColor(ctx.hover.blocked ? '#e0603f' : '#5aa7e8');
+      ret.setColor(ctx.hover.blocked ? '#e0603f' : '#e8b45a');
     }
 
     camera.position.set(ctx.x, ctx.eye + bobY, ctx.z);
