@@ -2,16 +2,93 @@
 // intelligence, review summaries, and the 2D / 3D map toggle. Orchestration
 // only; the heavy lifting lives in the focused modules it imports.
 
-import { LOCATIONS, TYPES, CENTERS, LIGHT_LABELS } from './catalog.js';
-import { initMap, updateMap, flyToListing, fitToRadius } from './map.js';
-import { drawPlanThumb, drawIsoHero } from './thumbs.js';
+// LOCATIONS is populated at startup by loadCatalog() from /api/locations,
+// which serves data/locations.json — real US property records from the Zillow
+// US House Listings 2023 Kaggle dataset. It starts empty; the app shows the
+// "search to see locations" placeholder until the fetch resolves.
+let LOCATIONS = [];
+import { TYPES, CENTERS, LIGHT_LABELS } from './catalog.js';
+import { initMap, updateMap, flyToListing, fitToRadius, setSelectedMarker, clearSelectedMarker, setSatellite, isSatellite } from './map.js';
+import { drawIsoHero } from './thumbs.js';
+import { createLocationCard } from './locationCard.js';
 import { openTour } from './tour.js';
+import { DEBUG_LOCATIONS } from './floorplanGen.js';
 import { parseQuery } from './nlp.js';
+import { parseScript } from './scriptParser.js';
 import { computeSuitability } from './score.js';
-import { sunTimes, sunPosition, fmtTime, fmtTimeAt, tzAbbr, compass, geocode, forecast, weatherText } from './intel.js';
-import { ensure3D, resize3D, update3D, flyHome3D, flyToListing3D } from './map3d.js';
+import { sunTimes, sunPosition, fmtTime, fmtTimeAt, tzAbbr, compass, geocode, forecast, weatherText, fetchPlaceInfo, reverseGeocode } from './intel.js';
+import { ensure3D, resize3D, update3D, flyHome3D, flyToListing3D, setGlobeMode, flyToGlobalView, startGlobeSpin, stopGlobeSpin, showStarfield, hideStarfield, applyHoloStyle, removeHoloStyle } from './map3d.js';
+import { findNaturalFeatures } from './NaturalFeatures.js';
+import { findRealPlaces } from './RealPlaces.js';
+
+// Line-art replacements for the OS emoji on the location-type filter chips
+// only (map markers and result cards still use TYPES[key].icon elsewhere) —
+// currentColor so each icon inherits the chip's own text color across its
+// default/hover/active states instead of carrying its own fixed tint.
+const CHIP_ICON_SVG = {
+  studio: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10.5l5-3v9l-5-3z"/></svg>',
+  loft: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="1"/><line x1="12" y1="4" x2="12" y2="20"/><line x1="4" y1="12" x2="20" y2="12"/></svg>',
+  warehouse: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V10l9-6 9 6v11"/><path d="M9 21v-6h6v6"/></svg>',
+  house: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11.5L12 5l8 6.5"/><path d="M6 10v10h12V10"/></svg>',
+  rooftop: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14.5l8-6 8 6"/><path d="M3 20.5h18"/><line x1="7" y1="20.5" x2="7" y2="16"/><line x1="17" y1="20.5" x2="17" y2="16"/></svg>',
+  storefront: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5l1.2-5.5h15.6l1.2 5.5"/><path d="M4 9.5V20h16V9.5"/><path d="M9.5 20v-6h5v6"/></svg>',
+  gallery: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="14" rx="1"/><circle cx="8.2" cy="9.2" r="1.4"/><path d="M3.5 16l5-4.5 3.5 3 3.5-3 4.5 4"/></svg>',
+  estate: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5L12 4l8 5.5"/><path d="M4 20.5h16"/><line x1="6.5" y1="20.5" x2="6.5" y2="10.5"/><line x1="11" y1="20.5" x2="11" y2="10.5"/><line x1="15.5" y1="20.5" x2="15.5" y2="10.5"/></svg>',
+};
+
+// Building types for which real-world results can be pulled from
+// Foursquare's Places API in addition to the curated catalog. Not every
+// catalog type maps cleanly onto a real, searchable business category
+// (there's no real-world equivalent of "rentable film/production space" as
+// its own business type), so this starts with just the ones that do.
+const REAL_SEARCHABLE_TYPES = {
+  studio: { label: 'Studio', searchQuery: 'photography studio' },
+};
 
 const KEY_STORAGE = 'scenescout-gmaps-key';
+// Free public client token — register at mapillary.com/dashboard.
+// This is a client-side public token by design, unlike the Groq/LocationIQ
+// keys which stay server-side only.
+const MAPILLARY_TOKEN = 'YOUR_MAPILLARY_CLIENT_TOKEN';
+let mapillaryViewer = null; // tracks the active viewer instance so we can tear it down cleanly
+
+// This project has no bundler — app.js and its sibling modules are loaded as
+// plain browser ES modules (see the relative './xyz.js' imports throughout).
+// A bare `import ... from 'mapillary-js'` can't resolve here the way it
+// would with Vite/webpack. Instead, lazy-load the library from a CDN the
+// same way map3d.js already does for MapLibre GL — script/link tags, then
+// use the global `mapillary` object the UMD build attaches to `window`.
+const MAPILLARY_JS = 'https://unpkg.com/mapillary-js@4.1.2/dist/mapillary.js';
+const MAPILLARY_CSS = 'https://unpkg.com/mapillary-js@4.1.2/dist/mapillary.css';
+let mapillaryLoadPromise = null;
+
+function loadMapillaryLib() {
+  if (window.mapillary) return Promise.resolve();
+  if (mapillaryLoadPromise) return mapillaryLoadPromise;
+  mapillaryLoadPromise = new Promise((resolve, reject) => {
+    const css = document.createElement('link');
+    css.rel = 'stylesheet'; css.href = MAPILLARY_CSS;
+    document.head.appendChild(css);
+    const s = document.createElement('script');
+    s.src = MAPILLARY_JS;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('mapillary-js load failed'));
+    document.head.appendChild(s);
+  });
+  return mapillaryLoadPromise;
+}
+
+// Dynamic natural-feature results (lakes, rivers, mountains, whatever Groq
+// identifies) live outside LOCATIONS since they're fetched live from
+// OpenStreetMap per search, not part of the curated catalog.
+let dynamicLocations = [];
+let dynamicSearchKey = ''; // dedupe: avoid re-fetching for an unchanged view
+
+// Same idea as dynamicLocations/dynamicSearchKey above, but for real
+// businesses matching a selected building-type filter (see
+// REAL_SEARCHABLE_TYPES) rather than a Groq-detected natural feature.
+let dynamicTypeLocations = [];
+let dynamicTypeSearchKey = '';
 
 const state = {
   center: { lat: CENTERS[0].lat, lng: CENTERS[0].lng },
@@ -23,16 +100,48 @@ const state = {
   light: 'any',
   sort: 'match',
   query: null,     // parsed NLP intent, feeds the suitability score
+  dynamicFeature: null, // Groq-detected natural feature spec (lake/river/etc), or null
   view: '2d',
+  hasSearched: false, // true once the user runs an AI search or picks a type filter — the map/results start empty, not pre-loaded with the full catalog
 };
 
-const EXAMPLES = [
-  'Modern industrial warehouse with large windows near downtown Chicago',
-  'Victorian mansion with formal gardens, under $800/day',
-  'Coffee shop with warm lighting and exposed brick in Austin',
-  'Blackout sound stage that fits a crew of 40 in Atlanta',
-  'Bright mid-century house with walls of glass in Seattle',
-];
+
+// -------------------------------------------------------- immersive modes
+// Retracts the letterbox bars when the user enters any full-viewport or
+// on-location viewing mode (3D map, street view, the 3D tour) — several
+// of these can be active independently, so track reasons in a set rather
+// than a single flag.
+const immersiveReasons = new Set();
+function setImmersive(reason, active) {
+  if (active) immersiveReasons.add(reason); else immersiveReasons.delete(reason);
+  const on = immersiveReasons.size > 0;
+  document.getElementById('letterbox-top')?.classList.toggle('retracted', on);
+  document.getElementById('letterbox-bottom')?.classList.toggle('retracted', on);
+}
+
+// --header-h drives both the top letterbox's offset (so it starts below the
+// header, not over it) and #layout/#sidebar's height math. The header's
+// real height isn't a constant — its wordmark+tagline row wraps to extra
+// lines at narrow widths — so track it live instead of trusting the :root
+// fallback to stay accurate at every viewport.
+function syncHeaderHeight() {
+  const header = document.querySelector('header');
+  if (!header) return;
+  document.documentElement.style.setProperty('--header-h', `${header.getBoundingClientRect().height}px`);
+}
+window.addEventListener('resize', syncHeaderHeight);
+
+// -------------------------------------------------------- iris transition
+// The one deliberate motion moment on search submit — plays over the map
+// viewport, decoupled from the actual search timing so a slow network
+// call never leaves the shutter hanging closed.
+function playIrisTransition() {
+  const el = document.getElementById('iris-transition');
+  if (!el) return;
+  el.classList.remove('play');
+  void el.offsetWidth; // restart the animation if it's still mid-play
+  el.classList.add('play');
+}
 
 // ------------------------------------------------------------- search core
 function haversineMi(lat1, lng1, lat2, lng2) {
@@ -43,12 +152,46 @@ function haversineMi(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+// computeSuitability was written for curated catalog locations; wrap it so
+// a lake (or any future non-standard location shape) can't crash search —
+// falls back to a neutral score instead of throwing.
+function safeSuitability(loc, st, query) {
+  try {
+    return computeSuitability(loc, st, query);
+  } catch (e) {
+    console.warn('[score] computeSuitability failed for', loc.id, e.message);
+    return { overall: 50, confidence: 'low', breakdown: [] };
+  }
+}
+
 function runSearch() {
+  if (!state.hasSearched) return [];
   const results = [];
-  for (const loc of LOCATIONS) {
+  // Dynamic feature results (from Groq's natural-feature detection) are
+  // included whenever one is active — independent of the building-type chips,
+  // since "lake" or "mountain" isn't a concept those chips represent.
+  // dynamicTypeLocations (real businesses for a selected type filter, e.g.
+  // real photo studios) already carries a proper TYPES key, so the type
+  // filter below applies to them exactly like the curated catalog.
+  const candidates = [
+    ...LOCATIONS,
+    ...(state.dynamicFeature ? dynamicLocations : []),
+    ...dynamicTypeLocations,
+  ];
+  const wantedTypes = new Set([...state.types, ...(state.query ? state.query.types : [])]);
+
+  for (const loc of candidates) {
     const distMi = haversineMi(state.center.lat, state.center.lng, loc.lat, loc.lng);
     if (distMi > state.radiusMi) continue;
-    const suit = computeSuitability(loc, state, state.query);
+    // Type/size/budget are hard filters — a location that doesn't clear them
+    // isn't shown at all, not just ranked lower. (Light stays a soft
+    // ranking signal in score.js; it's more a preference than a pass/fail.)
+    // A dynamic feature (lake, mountain, ...) has no building type to match
+    // against, so a type filter doesn't apply to it — only to the catalog.
+    if (wantedTypes.size && TYPES[loc.type] && !wantedTypes.has(loc.type)) continue;
+    if (state.minSqft && loc.sqft < state.minSqft) continue;
+    if (isFinite(state.maxRate) && loc.rate > state.maxRate) continue;
+    const suit = safeSuitability(loc, state, state.query);
     results.push({ ...loc, distMi, score: suit.overall, suit });
   }
   const sorters = {
@@ -61,53 +204,100 @@ function runSearch() {
   return results;
 }
 
+// Fetches results for the current dynamic feature (if any) + center/radius,
+// unless we've already fetched for this exact view. Fire-and-forget from
+// render() — re-renders once results land rather than blocking the current
+// render on a network call.
+let dynamicFetchInFlight = false;
+
+async function refreshDynamicFeatureIfNeeded() {
+  if (!state.dynamicFeature) { dynamicLocations = []; dynamicSearchKey = ''; dynamicFetchInFlight = false; return; }
+
+  const key = JSON.stringify(state.dynamicFeature) +
+    `|${state.center.lat.toFixed(3)},${state.center.lng.toFixed(3)},${state.radiusMi}`;
+  if (key === dynamicSearchKey) return; // already fetched for this view
+  dynamicSearchKey = key;
+
+  // Setting this (and dynamicSearchKey above) runs synchronously before the
+  // await below yields, so the render() call that triggered this — still
+  // unwinding its own call stack — already sees dynamicFetchInFlight=true.
+  dynamicFetchInFlight = true;
+  const found = await findNaturalFeatures(state.center, state.radiusMi, state.dynamicFeature);
+  dynamicFetchInFlight = false;
+  // Guard against a stale response landing after the user changed the query
+  // or moved again — only apply if we're still looking at the same view.
+  if (dynamicSearchKey === key) {
+    dynamicLocations = found;
+    render();
+  }
+}
+
+// Same fetch-if-view-changed pattern as refreshDynamicFeatureIfNeeded, for
+// real-world businesses (via Foursquare) matching whichever selected type
+// filters have a real, searchable business category (see
+// REAL_SEARCHABLE_TYPES). Multiple such types could be selected at once,
+// so this fetches each independently and merges.
+let dynamicTypeFetchInFlight = false;
+
+async function refreshDynamicTypesIfNeeded() {
+  const activeTypes = [...state.types].filter(t => REAL_SEARCHABLE_TYPES[t]).sort();
+  if (!activeTypes.length) { dynamicTypeLocations = []; dynamicTypeSearchKey = ''; dynamicTypeFetchInFlight = false; return; }
+
+  const key = JSON.stringify(activeTypes) +
+    `|${state.center.lat.toFixed(3)},${state.center.lng.toFixed(3)},${state.radiusMi}`;
+  if (key === dynamicTypeSearchKey) return; // already fetched for this view
+  dynamicTypeSearchKey = key;
+
+  dynamicTypeFetchInFlight = true;
+  const batches = await Promise.all(
+    activeTypes.map(t => findRealPlaces(state.center, state.radiusMi, t, REAL_SEARCHABLE_TYPES[t]))
+  );
+  dynamicTypeFetchInFlight = false;
+  if (dynamicTypeSearchKey === key) {
+    dynamicTypeLocations = batches.flat();
+    render();
+  }
+}
+
+// TYPES only covers curated building categories; dynamic features (lake,
+// river, mountain, ...) carry their own display info on the object itself.
+// Every place that needs a type's icon/label/color should go through this.
+function typeInfo(loc) {
+  return TYPES[loc.type] || { icon: loc._icon || '📍', label: loc._label || 'Location', color: loc._color || '#7a8a99' };
+}
+
 // ---------------------------------------------------------------- results
 function render() {
+  refreshDynamicFeatureIfNeeded(); // fire-and-forget; re-renders itself once data lands
+  refreshDynamicTypesIfNeeded();   // same, for real-business type searches (e.g. real studios)
   const results = runSearch();
-  document.getElementById('results-meta').innerHTML =
-    `<b>${results.length}</b> of ${LOCATIONS.length} locations within ${state.radiusMi} mi of ${escapeHtml(state.centerName)}`;
 
-  const list = document.getElementById('results');
-  list.innerHTML = '';
-  if (!results.length) {
-    list.innerHTML = `<div class="empty">No locations in this radius.<br>Widen the radius, search another city above, or click the map to move the center.</div>`;
-  }
-  for (const loc of results) {
-    const t = TYPES[loc.type];
-    const card = document.createElement('article');
-    card.className = 'card';
-    card.innerHTML = `
-      <canvas width="300" height="150"></canvas>
-      <div class="card-body">
-        <div class="card-top">
-          <h3>${escapeHtml(loc.name)}</h3>
-          <span class="match" style="--pct:${loc.score}">${loc.score}%</span>
-        </div>
-        <div class="card-sub">${t.icon} ${t.label} · ${escapeHtml(loc.neighborhood)}</div>
-        <div class="card-stats">
-          <span>${loc.sqft.toLocaleString()} ft²</span>
-          <span>${loc.ceilingFt ? loc.ceilingFt + ' ft ceil' : 'open air'}</span>
-          <span>$${loc.rate}/hr</span>
-          <span>${loc.distMi.toFixed(1)} mi</span>
-        </div>
-      </div>`;
-    drawPlanThumb(loc, card.querySelector('canvas'));
-    card.onclick = () => openDetail(loc);
-    list.appendChild(card);
-  }
-
-  updateMap(state, results, LOCATIONS);
+  // Before the first search, no markers should be on the map at all — not
+  // even dimmed ones — so pass an empty set rather than the full catalog.
+  const allLocations = state.hasSearched ? [...LOCATIONS, ...dynamicLocations, ...dynamicTypeLocations] : [];
+  updateMap(state, results, allLocations);
   if (state.view === '3d') update3D(state.center, results);
+
+  // exposure-style HUD readout, top-left of the map viewport
+  document.getElementById('hud-radius').textContent = `${state.radiusMi} MI`;
+  document.getElementById('hud-count').textContent = `${results.length} RESULT${results.length === 1 ? '' : 'S'}`;
 }
 
 // --------------------------------------------------------------- AI search
 function applyParsedToState(q) {
   state.query = q;
-  if (q.types.size) state.types = new Set(q.types);
+  // Every field here is fully replaced by the current parse (defaulting to
+  // "not specified" when absent) except this one used to be an exception —
+  // it only overwrote state.types when the new query mentioned a building
+  // type, silently leaving a stale type filter from an earlier search (or
+  // an earlier manual chip click) active for a query that has nothing to
+  // do with it, e.g. a pure natural-feature search like "300 m lake".
+  state.types = new Set(q.types);
   state.light = q.light || 'any';
   state.minSqft = q.minSqft || 0;
   state.maxRate = q.maxRate ?? Infinity;
   if (q.radiusMi) state.radiusMi = q.radiusMi;
+  state.dynamicFeature = q.naturalFeature || null;
   syncFilterControls();
 }
 
@@ -119,8 +309,8 @@ function syncFilterControls() {
   sq.value = Math.min(10000, state.minSqft || 0);
   document.getElementById('sqft-label').textContent = state.minSqft ? `${state.minSqft.toLocaleString()}+ ft²` : 'Any';
   const rt = document.getElementById('rate-range');
-  rt.value = isFinite(state.maxRate) ? Math.min(600, state.maxRate) : 600;
-  document.getElementById('rate-label').textContent = isFinite(state.maxRate) ? `≤ $${state.maxRate}/hr` : 'Any';
+  rt.value = isFinite(state.maxRate) ? Math.min(700, state.maxRate) : 700;
+  document.getElementById('rate-label').textContent = isFinite(state.maxRate) ? `≤ ${state.maxRate}/day` : 'Any';
   document.getElementById('light-select').value = state.light;
   const rr = document.getElementById('radius-range');
   rr.value = state.radiusMi; document.getElementById('radius-label').textContent = `${state.radiusMi} mi`;
@@ -136,19 +326,47 @@ function renderInterpreted(q) {
   box.innerHTML = `<div class="ai-interpreted-head">AI read your brief as</div><div class="ai-chips">${chips}</div>`;
 }
 
-async function runAISearch(text) {
-  const q = parseQuery(text);
-  applyParsedToState(q);
-  renderInterpreted(q);
+// Visible feedback while the AI-parse/geocode round-trip is in flight — with
+// no indicator at all, a slow network call reads as the app being stuck
+// rather than working.
+function setSearching(on) {
+  const btn = document.getElementById('ai-go');
+  btn.disabled = on;
+  btn.textContent = on ? 'Reading…' : 'Search ✨';
+}
 
-  if (q.locationText) {
-    setGeoStatus(`Locating “${q.locationText}”…`);
-    const hit = await geocode(q.locationText);
-    if (hit) moveCenter(hit.lat, hit.lng, hit.label);
-    else setGeoStatus(`Couldn't find “${q.locationText}” — showing ${state.centerName}.`, true);
+async function runAISearch(text) {
+  setSearching(true);
+  state.hasSearched = true;
+  showBgProcess('AI is interpreting location requirements...');
+  try {
+    const q = await parseQuery(text);
+    applyParsedToState(q);
+    renderInterpreted(q);
+
+    // If searching for beaches or coastal features without a city specified,
+    // default to Miami Beach to ensure real beach locations load on the map
+    const textLower = (text || '').toLowerCase();
+    if (!q.locationText && (textLower.includes('beach') || (q.naturalFeature && q.naturalFeature.label === 'Beach'))) {
+      q.locationText = 'Miami Beach, FL';
+    } else if (!q.locationText && (textLower.includes('mountain') || (q.naturalFeature && q.naturalFeature.label === 'Mountain Peak'))) {
+      q.locationText = 'Denver, CO';
+    }
+
+    // If a location is specified, geocode and move the map center
+    if (q.locationText) {
+      setGeoStatus(`Locating “${q.locationText}”…`);
+      showBgProcess(`Geocoding “${q.locationText}”…`);
+      const hit = await geocode(q.locationText);
+      if (hit) moveCenter(hit.lat, hit.lng, hit.label);
+      else setGeoStatus(`Couldn't find “${q.locationText}” — showing ${state.centerName}.`, true);
+    }
+    render();
+    if (state.view === '3d') flyHome3D(state.center);
+  } finally {
+    setSearching(false);
+    hideBgProcess();
   }
-  render();
-  if (state.view === '3d') flyHome3D(state.center);
 }
 
 // --------------------------------------------------------------- geocoding
@@ -182,10 +400,11 @@ let currentLoc = null;
 
 function openDetail(loc) {
   currentLoc = loc;
-  const t = TYPES[loc.type];
+  const t = typeInfo(loc);
   document.getElementById('detail').classList.remove('hidden');
   flyToListing(loc);
   if (state.view === '3d') flyToListing3D(loc);
+  setSelectedMarker(loc.id);
 
   document.getElementById('detail-title').textContent = loc.name;
   document.getElementById('detail-sub').innerHTML =
@@ -193,22 +412,31 @@ function openDetail(loc) {
   document.getElementById('detail-desc').textContent = loc.desc;
 
   document.getElementById('detail-stats').innerHTML = `
-    <div><b>${loc.sqft.toLocaleString()}</b><span>sq ft</span></div>
-    <div><b>${loc.ceilingFt || '—'}</b><span>ft ceilings</span></div>
-    <div><b>$${loc.rate}</b><span>per hour</span></div>
-    <div><b>~${loc.intel.crewCapacity}</b><span>crew capacity</span></div>`;
+    <div><b id="stat-sqft">0</b><span>sq ft</span></div>
+    <div><b id="stat-ceil">${loc.ceilingFt ? '0' : '—'}</b><span>ft ceilings</span></div>
+    <div><b id="stat-rate">$0</b><span>est. per day</span></div>
+    <div><b id="stat-crew">${loc.intel.crewCapacity != null ? '~0' : '—'}</b><span>crew capacity</span></div>`;
+  animateCount('stat-sqft', loc.sqft);
+  if (loc.ceilingFt) animateCount('stat-ceil', loc.ceilingFt);
+  animateCount('stat-rate', loc.rate, { prefix: '$' });
+  if (loc.intel.crewCapacity != null) animateCount('stat-crew', loc.intel.crewCapacity, { prefix: '~' });
 
   document.getElementById('detail-tags').innerHTML =
     `<div class="section-h">Features</div>` + loc.tags.map(tag => `<span>${escapeHtml(tag)}</span>`).join('');
 
-  const suit = loc.suit || computeSuitability(loc, state, state.query);
+  const suit = loc.suit || safeSuitability(loc, state, state.query);
   document.getElementById('hero-badge').innerHTML =
     `<b>${suit.overall}%</b><span>match · ${suit.confidence} confidence</span>`;
   renderSuitability(suit);
   renderIntel(loc);
   renderReviews(loc);
 
-  drawIsoHero(loc, document.getElementById('hero-canvas'));
+  try {
+    drawIsoHero(loc, document.getElementById('hero-canvas'));
+  } catch (e) {
+    console.warn('[thumbs] drawIsoHero failed for', loc.id, e.message);
+  }
+  renderPlaceInfo(loc);
   const sv = document.getElementById('sv-panel');
   sv.classList.add('hidden'); sv.innerHTML = '';
   document.querySelector('.modal').scrollTop = 0;
@@ -325,7 +553,59 @@ function renderReviews(loc) {
     </div>`;
 }
 
-// draw a simple sun-arc for the day with the current sun marked
+// Real-world background for a natural/geographic feature (lake, park,
+// mountain, ...) via Wikipedia. Only meaningful for dynamic feature results
+// — the curated soundstage/loft/etc. catalog is fictional and already has
+// hand-authored descriptions, so a Wikipedia lookup for those would just
+// return an unrelated real-world match or nothing at all.
+function getOrCreatePlaceInfoContainer() {
+  let el = document.getElementById('detail-place-info');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'detail-place-info';
+  el.className = 'detail-place-info';
+  const desc = document.getElementById('detail-desc');
+  if (desc && desc.parentNode) {
+    desc.parentNode.insertBefore(el, desc.nextSibling);
+  } else {
+    document.querySelector('.modal')?.appendChild(el);
+  }
+  return el;
+}
+
+async function renderPlaceInfo(loc) {
+  if (loc.floorplan) {
+    const existing = document.getElementById('detail-place-info');
+    if (existing) existing.innerHTML = '';
+    return;
+  }
+
+  const el = getOrCreatePlaceInfoContainer();
+  el.innerHTML = `<div class="place-info-loading">Looking up ${escapeHtml(loc._label || 'this place')} on Wikipedia…</div>`;
+
+  const info = await fetchPlaceInfo({ lat: loc.lat, lng: loc.lng, name: loc.name, wikipedia: loc.wikipedia });
+
+  // Guard against a stale response landing after the user closed/switched
+  // to a different location's detail view — same pattern as renderPhotos.
+  if (currentLoc !== loc) return;
+
+  if (!info) {
+    el.innerHTML = `<div class="place-info-empty">No Wikipedia article found for this location.</div>`;
+    return;
+  }
+
+  el.innerHTML = `
+    <div class="section-h">About <span class="section-sub">via Wikipedia</span></div>
+    <div class="place-info-body">
+      ${info.thumbnail ? `<img class="place-info-thumb" src="${escapeHtml(info.thumbnail)}" alt="${escapeHtml(info.title)}" loading="lazy">` : ''}
+      <div>
+        <p>${escapeHtml(info.extract)}</p>
+        <a href="${escapeHtml(info.url)}" target="_blank" rel="noopener">Read more on Wikipedia ↗</a>
+      </div>
+    </div>`;
+}
+
+
 function drawSunTrack(el, loc, now, s, p) {
   if (!el) return;
   const W = 320, H = 60;
@@ -347,35 +627,101 @@ function drawSunTrack(el, loc, now, s, p) {
 }
 
 // ---------------------------------------------------------------- street view
-function toggleStreetView() {
+// Three-tier fallback:
+//  1. Mapillary — free, no key required from the user, but coverage is
+//     patchy (crowdsourced, dense in some cities, empty elsewhere).
+//  2. Google Street View embed — only if the user added their own Maps key
+//     in Settings (their key, their billing).
+//  3. External "open in Google Maps / Google Earth" links — always works,
+//     just leaves the app.
+async function toggleStreetView() {
   if (!currentLoc) return;
   const panel = document.getElementById('sv-panel');
-  if (!panel.classList.contains('hidden')) { panel.classList.add('hidden'); panel.innerHTML = ''; return; }
+
+  if (!panel.classList.contains('hidden')) {
+    teardownMapillary();
+    panel.classList.add('hidden');
+    panel.innerHTML = '';
+    setImmersive('streetview', false);
+    return;
+  }
+
   panel.classList.remove('hidden');
-  const key = localStorage.getItem(KEY_STORAGE);
+  setImmersive('streetview', true);
   const { lat, lng } = currentLoc;
-  if (key) {
+
+  panel.innerHTML = `<div class="sv-loading">Looking for street-level imagery…</div>`;
+
+  const imageId = await findNearestMapillaryImage(lat, lng).catch(() => null);
+
+  if (imageId) {
+    panel.innerHTML = `<div id="mly-viewer" style="width:100%;height:100%"></div>
+      <div class="sv-note">Street-level imagery via Mapillary (crowdsourced, free) — drag to look around.</div>`;
+    try {
+      await loadMapillaryLib();
+      teardownMapillary(); // in case one is somehow still alive
+      const { Viewer } = window.mapillary;
+      mapillaryViewer = new Viewer({
+        accessToken: MAPILLARY_TOKEN,
+        container: 'mly-viewer',
+        imageId,
+      });
+      return;
+    } catch (e) {
+      console.warn('[streetview] Mapillary viewer failed to init:', e.message);
+      // fall through to the next tier below
+    }
+  }
+
+  // Tier 2: user's own Google Maps key, if they've added one in Settings
+  const googleKey = localStorage.getItem(KEY_STORAGE);
+  if (googleKey) {
     panel.innerHTML = `
-      <iframe src="https://www.google.com/maps/embed/v1/streetview?key=${encodeURIComponent(key)}&location=${lat},${lng}&fov=90"
+      <iframe src="https://www.google.com/maps/embed/v1/streetview?key=${encodeURIComponent(googleKey)}&location=${lat},${lng}&fov=90"
         allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
-      <div class="sv-note">Live Google Street View at this address — drag to look around the exterior.</div>`;
-  } else {
-    panel.innerHTML = `
-      <div class="sv-fallback">
-        <p>Embedded Street View needs a free Google Maps API key — add one in <b>⚙ Settings</b> (enable the “Maps Embed API”).</p>
-        <div class="sv-links">
-          <a class="btn" target="_blank" rel="noopener"
-             href="https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat},${lng}">Open Street View ↗</a>
-          <a class="btn" target="_blank" rel="noopener"
-             href="https://earth.google.com/web/search/${lat},${lng}">Open Google Earth ↗</a>
-        </div>
-      </div>`;
+      <div class="sv-note">No Mapillary coverage here — showing Google Street View instead.</div>`;
+    return;
+  }
+
+  // Tier 3: no free imagery found, no Google key on file — hand off links
+  panel.innerHTML = `
+    <div class="sv-fallback">
+      <p>No free street-level imagery found at this location. Add a Google Maps API key in
+         <b>⚙ Settings</b> for embedded Street View, or open one of these instead:</p>
+      <div class="sv-links">
+        <a class="btn" target="_blank" rel="noopener"
+           href="https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat},${lng}">Open Street View ↗</a>
+        <a class="btn" target="_blank" rel="noopener"
+           href="https://earth.google.com/web/search/${lat},${lng}">Open Google Earth ↗</a>
+      </div>
+    </div>`;
+}
+
+async function findNearestMapillaryImage(lat, lng) {
+  if (!MAPILLARY_TOKEN || MAPILLARY_TOKEN === 'YOUR_MAPILLARY_CLIENT_TOKEN') return null;
+  const res = await fetch(
+    `https://graph.mapillary.com/images?access_token=${MAPILLARY_TOKEN}` +
+    `&fields=id&closeto=${lng},${lat}&radius=100`,
+    { signal: AbortSignal.timeout(10000) }
+  );
+  if (!res.ok) throw new Error(`Mapillary API error: ${res.status}`);
+  const data = await res.json();
+  return data.data?.[0]?.id || null;
+}
+
+function teardownMapillary() {
+  if (mapillaryViewer) {
+    try { mapillaryViewer.remove(); } catch { /* already gone */ }
+    mapillaryViewer = null;
   }
 }
 
 function closeDetail() {
+  teardownMapillary();
   document.getElementById('detail').classList.add('hidden');
   currentLoc = null;
+  clearSelectedMarker();
+  setImmersive('streetview', false);
 }
 
 // ---------------------------------------------------------------- settings
@@ -390,16 +736,31 @@ function saveSettings() {
 }
 
 // ---------------------------------------------------------------- 2D / 3D
-async function setView(view) {
-  if (view === state.view) return;
+let exploreMode = false; // true when "Explore Globe" is active — map clicks discover a place instead of doing nothing
+
+// force: skip the no-op guard even if `view` already matches state.view.
+// Explore Globe needs this — entering it while already on the "3D" tab
+// (state.view is already '3d' from an earlier click) must still show the
+// 3D container and (re-)run ensure3D/flyHome3D, not silently no-op just
+// because the *tab* didn't change.
+async function setView(view, { force = false } = {}) {
+  if (view === state.view && !force) return;
   state.view = view;
-  document.querySelectorAll('#map-toggle button').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+  setImmersive('3d', view === '3d');
+  // [data-view] here too — #explore-toggle also lives inside #map-toggle
+  // but isn't a 2D/3D toggle button; without this filter this was stripping
+  // its 'active' class the instant enterExploreMode's own setView('3d')
+  // call ran, undoing the class it had just added two lines earlier.
+  document.querySelectorAll('#map-toggle button[data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   const el3d = document.getElementById('map3d');
   const el2d = document.getElementById('map2d');
   if (view === '3d') {
     el3d.style.display = 'block'; el2d.style.visibility = 'hidden';
     const ok = await ensure3D(el3d, (id) => {
-      const loc = LOCATIONS.find(l => l.id === id); if (loc) openDetail(loc);
+      const loc = LOCATIONS.find(l => l.id === id) || dynamicLocations.find(l => l.id === id);
+      if (loc) openDetail(loc);
+    }, (lat, lng) => {
+      if (exploreMode) handleGlobeClick(lat, lng);
     });
     if (ok) { resize3D(); flyHome3D(state.center); update3D(state.center, runSearch()); }
   } else {
@@ -407,20 +768,357 @@ async function setView(view) {
   }
 }
 
+// --------------------------------------------------------- explore globe
+// Free-roam mode: pulls the 3D camera out to a whole-Earth globe view and
+// lets the user click anywhere, independent of the curated search radius.
+// A click reverse-geocodes the point and shows real photos of wherever was
+// clicked — separate from the curated-location detail modal, since a random
+// point on Earth has none of that modal's expected data (rate, floor plan,
+// suitability score, etc).
+async function enterExploreMode() {
+  exploreMode = true;
+  document.getElementById('explore-toggle')?.classList.add('active');
+  await setView('3d', { force: true });
+  // Wait for the globe projection to actually be applied before flying out
+  // and starting rotation — setGlobeMode defers until style.load if the
+  // style isn't ready yet (fixes "Style is not done loading" error).
+  await setGlobeMode(true);
+  applyHoloStyle();
+  showStarfield();
+  flyToGlobalView();
+  startGlobeSpin();
+}
+
+function exitExploreMode() {
+  exploreMode = false;
+  document.getElementById('explore-toggle')?.classList.remove('active');
+  hideStarfield();
+  stopGlobeSpin();
+  removeHoloStyle();
+  setGlobeMode(false);
+  closeDiscoverPanel();
+  if (state.view === '3d') flyHome3D(state.center);
+}
+
+function getOrCreateExploreButton() {
+  let btn = document.getElementById('explore-toggle');
+  if (btn) return btn;
+  const toggle = document.getElementById('map-toggle');
+  if (!toggle) return null;
+  btn = document.createElement('button');
+  btn.id = 'explore-toggle';
+  btn.type = 'button';
+  btn.textContent = '🌐 Explore Globe';
+  btn.onclick = () => { exploreMode ? exitExploreMode() : enterExploreMode(); };
+  toggle.appendChild(btn);
+  return btn;
+}
+
+function getOrCreateDiscoverPanel() {
+  let el = document.getElementById('discover-panel');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'discover-panel';
+  el.className = 'discover-panel hidden';
+  document.body.appendChild(el);
+  return el;
+}
+
+function closeDiscoverPanel() {
+  const el = document.getElementById('discover-panel');
+  if (el) { el.classList.add('hidden'); el.innerHTML = ''; }
+}
+
+async function handleGlobeClick(lat, lng) {
+  const panel = getOrCreateDiscoverPanel();
+  panel.classList.remove('hidden');
+  panel.innerHTML = `<div class="discover-loading">Looking up ${lat.toFixed(3)}, ${lng.toFixed(3)}…</div>`;
+
+  const place = await reverseGeocode(lat, lng);
+  const label = place?.label || `${lat.toFixed(3)}, ${lng.toFixed(3)}`;
+
+  panel.innerHTML = `
+    <div class="discover-head">
+      <h3>${escapeHtml(label)}</h3>
+      <button class="discover-close" id="discover-close">✕</button>
+    </div>
+    <div class="discover-coords">${lat.toFixed(4)}, ${lng.toFixed(4)}</div>
+    <div class="sv-links">
+      <a class="btn" target="_blank" rel="noopener"
+         href="https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat},${lng}">Open Street View ↗</a>
+      <a class="btn" target="_blank" rel="noopener"
+         href="https://earth.google.com/web/search/${lat},${lng}">Open Google Earth ↗</a>
+    </div>
+    <button class="btn" id="discover-search-here">Search near here</button>`;
+
+  document.getElementById('discover-close').onclick = closeDiscoverPanel;
+  document.getElementById('discover-search-here').onclick = () => {
+    moveCenter(lat, lng, label);
+    exitExploreMode();
+    render();
+  };
+}
+
 // -------------------------------------------------------------------- init
 function initAISearch() {
   const input = document.getElementById('ai-input');
-  const go = () => runAISearch(input.value);
+  const go = () => { playClapAnimation(); playIrisTransition(); runAISearch(input.value); };
   document.getElementById('ai-go').onclick = go;
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go(); }
   });
-  const ex = document.getElementById('ai-examples');
-  for (const text of EXAMPLES) {
-    const b = document.createElement('button');
-    b.className = 'ex-chip'; b.textContent = text;
-    b.onclick = () => { input.value = text; runAISearch(text); };
-    ex.appendChild(b);
+}
+
+// The clap-stick "snaps down and back" on search submit — a real
+// clapperboard's own action, not a generic click ripple. CSS-only
+// keyframe (see .slate-stick.clapping in css/style.css); this just
+// re-triggers it by removing/re-adding the class, since a class already
+// present won't restart a CSS animation on its own.
+function playClapAnimation() {
+  const stick = document.getElementById('slate-stick');
+  if (!stick) return;
+  stick.classList.remove('clapping');
+  void stick.offsetWidth; // force reflow so the removal actually takes effect first
+  stick.classList.add('clapping');
+}
+
+// -------------------------------------------------- Background & Script Breakdown
+
+function showBgProcess(text = 'Processing background task...') {
+  const indicator = document.getElementById('bg-process-indicator');
+  const txt = document.getElementById('bg-process-text');
+  if (indicator && txt) {
+    txt.textContent = text;
+    indicator.classList.remove('hidden');
+  }
+}
+
+function hideBgProcess() {
+  const indicator = document.getElementById('bg-process-indicator');
+  if (indicator) indicator.classList.add('hidden');
+}
+
+function setupScriptBreakdown() {
+  const dropZone = document.getElementById('script-drop-zone');
+  const fileInput = document.getElementById('script-upload');
+  const statusEl = document.getElementById('script-status');
+  const resultsWrap = document.getElementById('script-results-wrap');
+  const resultsEl = document.getElementById('script-results');
+  const countEl = document.getElementById('results-count');
+  const enhanceBtn = document.getElementById('enhance-ai');
+
+  if (!dropZone || !fileInput) return;
+
+  dropZone.addEventListener('click', (e) => {
+    if (e.target !== fileInput) {
+      fileInput.click();
+    }
+  });
+
+  // Drag and drop event handlers
+  ['dragenter', 'dragover'].forEach(name => {
+    dropZone.addEventListener(name, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropZone.classList.add('dragover');
+    });
+  });
+
+  ['dragleave', 'drop'].forEach(name => {
+    dropZone.addEventListener(name, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropZone.classList.remove('dragover');
+    });
+  });
+
+  dropZone.addEventListener('drop', (e) => {
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) {
+      fileInput.files = files;
+      handleScriptFile(files[0]);
+    }
+  });
+
+  fileInput.onchange = () => {
+    if (fileInput.files && fileInput.files.length > 0) {
+      handleScriptFile(fileInput.files[0]);
+    }
+  };
+
+  async function handleScriptFile(file) {
+    if (!file) return;
+
+    // Validate size (max 5MB = 5 * 1024 * 1024 bytes)
+    const MAX_SIZE = 5 * 1024 * 1024;
+    if (file.size > MAX_SIZE) {
+      statusEl.className = 'script-status error';
+      statusEl.textContent = `❌ File size (${(file.size / (1024 * 1024)).toFixed(1)}MB) exceeds the 5MB limit. Please upload a smaller PDF screenplay.`;
+      statusEl.classList.remove('hidden');
+      resultsWrap.classList.add('hidden');
+      return;
+    }
+
+    if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
+      statusEl.className = 'script-status error';
+      statusEl.textContent = '❌ Invalid file type. Please upload a valid PDF screenplay (.pdf).';
+      statusEl.classList.remove('hidden');
+      resultsWrap.classList.add('hidden');
+      return;
+    }
+
+    // Auto-open Script Breakdown panel if collapsed
+    const breakdownDetails = document.getElementById('script-breakdown');
+    if (breakdownDetails) {
+      breakdownDetails.open = true;
+      breakdownDetails.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    // Show processing states
+    statusEl.className = 'script-status info';
+    statusEl.textContent = `⏳ Parsing screenplay "${file.name}"...`;
+    statusEl.classList.remove('hidden');
+    resultsWrap.classList.add('hidden');
+    showBgProcess(`Analyzing script: ${file.name}`);
+
+    try {
+      const locations = await parseScript(file);
+      hideBgProcess();
+
+      if (!locations || locations.length === 0) {
+        statusEl.className = 'script-status info';
+        statusEl.textContent = `ℹ️ Screenplay loaded, but no location keywords or budget criteria were matched.`;
+        return;
+      }
+
+      statusEl.className = 'script-status success';
+      statusEl.textContent = `✅ Successfully extracted ${locations.length} location requirement criteria from "${file.name}".`;
+
+      // Render results
+      resultsEl.innerHTML = '';
+      countEl.textContent = `${locations.length} tags`;
+
+      const tagsForSearch = [];
+
+      locations.forEach(loc => {
+        const card = document.createElement('div');
+        card.className = 'location-card';
+
+        let categoryBadge = '📍 LOCATION';
+        if (loc.type === 'city') categoryBadge = '🏙️ CITY';
+        else if (loc.type === 'scene') categoryBadge = '🎬 SCENE';
+        else if (loc.type === 'feature') categoryBadge = '🌲 FEATURE';
+        else if (loc.type === 'budget') categoryBadge = '💰 BUDGET';
+        else if (loc.category) categoryBadge = `🏠 ${escapeHtml(loc.category.toUpperCase())}`;
+
+        card.innerHTML = `<span class="tag-type">${categoryBadge}</span> <span>${escapeHtml(loc.name)}</span>`;
+
+        tagsForSearch.push(loc.name);
+
+        // Click card to search that single keyword
+        card.onclick = () => {
+          const aiInput = document.getElementById('ai-input');
+          if (aiInput) {
+            aiInput.value = loc.name;
+            playClapAnimation();
+            playIrisTransition();
+            runAISearch(loc.name);
+          }
+        };
+
+        resultsEl.appendChild(card);
+      });
+
+      resultsWrap.classList.remove('hidden');
+
+      // Setup Enhance with AI button
+      if (enhanceBtn) {
+        enhanceBtn.classList.remove('hidden');
+        enhanceBtn.onclick = () => {
+          const queryText = tagsForSearch.join(' ');
+          const aiInput = document.getElementById('ai-input');
+          if (aiInput) {
+            aiInput.value = queryText;
+          }
+          playClapAnimation();
+          playIrisTransition();
+          runAISearch(queryText);
+        };
+      }
+
+      // Render persistent location checklist panel
+      const checklistPanel = document.getElementById('script-checklist-panel');
+      const checklistItemsEl = document.getElementById('script-checklist-items');
+      const checklistProgressEl = document.getElementById('checklist-progress');
+
+      if (checklistPanel && checklistItemsEl) {
+        checklistItemsEl.innerHTML = '';
+        let checkedCount = 0;
+
+        const updateProgress = () => {
+          if (checklistProgressEl) {
+            checklistProgressEl.textContent = `${checkedCount}/${locations.length} checked`;
+          }
+        };
+
+        locations.forEach((loc, idx) => {
+          const item = document.createElement('div');
+          item.className = 'checklist-item';
+
+          let categoryBadge = '📍';
+          if (loc.type === 'city') categoryBadge = '🏙️';
+          else if (loc.type === 'scene') categoryBadge = '🎬';
+          else if (loc.type === 'feature') categoryBadge = '🌲';
+          else if (loc.type === 'budget') categoryBadge = '💰';
+
+          item.innerHTML = `
+            <div class="checklist-item-left">
+              <input type="checkbox" id="chk-${idx}" class="checklist-checkbox" />
+              <span class="checklist-item-name">${categoryBadge} ${escapeHtml(loc.name)}</span>
+            </div>
+            <button class="checklist-search-btn" title="Search for this location on the map">Search 🔍</button>
+          `;
+
+          const checkbox = item.querySelector('.checklist-checkbox');
+          const searchBtn = item.querySelector('.checklist-search-btn');
+
+          checkbox.onchange = () => {
+            if (checkbox.checked) {
+              item.classList.add('done');
+            } else {
+              item.classList.remove('done');
+            }
+            checkedCount = checklistItemsEl.querySelectorAll('.checklist-checkbox:checked').length;
+            updateProgress();
+          };
+
+          searchBtn.onclick = () => {
+            const aiInput = document.getElementById('ai-input');
+            if (aiInput) {
+              aiInput.value = loc.name;
+            }
+            checkbox.checked = true;
+            item.classList.add('done');
+            checkedCount = checklistItemsEl.querySelectorAll('.checklist-checkbox:checked').length;
+            updateProgress();
+            playClapAnimation();
+            playIrisTransition();
+            runAISearch(loc.name);
+          };
+
+          checklistItemsEl.appendChild(item);
+        });
+
+        updateProgress();
+        checklistPanel.classList.remove('hidden');
+      }
+
+    } catch (err) {
+      console.error('[scriptParser] Error:', err);
+      hideBgProcess();
+      statusEl.className = 'script-status error';
+      statusEl.textContent = `❌ Failed to parse PDF: ${err.message || 'Unknown error'}`;
+    }
   }
 }
 
@@ -439,10 +1137,12 @@ function initFilters() {
   for (const [key, t] of Object.entries(TYPES)) {
     const chip = document.createElement('button');
     chip.className = 'chip'; chip.dataset.type = key;
-    chip.innerHTML = `${t.icon} ${t.label}`;
+    const icon = CHIP_ICON_SVG[key] || '';
+    chip.innerHTML = `<span class="chip-icon" aria-hidden="true">${icon}</span><span class="chip-label">${t.label}</span>`;
     chip.onclick = () => {
       if (state.types.has(key)) state.types.delete(key); else state.types.add(key);
       chip.classList.toggle('active');
+      state.hasSearched = true;
       render();
     };
     chipWrap.appendChild(chip);
@@ -456,7 +1156,7 @@ function initFilters() {
   };
   bindRange('radius-range', 'radius-label', v => `${v} mi`, v => { state.radiusMi = v; });
   bindRange('sqft-range', 'sqft-label', v => v ? `${v.toLocaleString()}+ ft²` : 'Any', v => { state.minSqft = v; });
-  bindRange('rate-range', 'rate-label', v => v >= 600 ? 'Any' : `≤ $${v}/hr`, v => { state.maxRate = v >= 600 ? Infinity : v; });
+  bindRange('rate-range', 'rate-label', v => v >= 600 ? 'Any' : `≤ ${v}/day`, v => { state.maxRate = v >= 600 ? Infinity : v; });
 
   document.getElementById('light-select').onchange = (e) => { state.light = e.target.value; render(); };
   document.getElementById('sort-select').onchange = (e) => { state.sort = e.target.value; render(); };
@@ -470,23 +1170,50 @@ function initFilters() {
   geoInput.closest('.filter-row').appendChild(status);
 }
 
-function init() {
+// Fetches the bundled catalog from /api/locations once at startup and
+// populates the module-level LOCATIONS array. Fires a render() after the
+// fetch resolves so the map shows the full set the moment data is ready.
+// Failures are non-fatal — the app still works for natural-feature and
+// Foursquare searches; the catalog just stays empty.
+async function loadCatalog() {
+  try {
+    const res = await fetch('/api/locations', { signal: AbortSignal.timeout(30000) });
+    if (!res.ok) throw new Error(`/api/locations returned ${res.status}`);
+    LOCATIONS = await res.json();
+    console.log(`[catalog] Loaded ${LOCATIONS.length} real locations`);
+    render(); // re-render now that we have data
+  } catch (e) {
+    console.warn('[catalog] Failed to load locations:', e.message);
+  }
+}
+
+async function init() {
+  syncHeaderHeight();
+  document.fonts?.ready.then(syncHeaderHeight);
   initAISearch();
   initFilters();
+  setupScriptBreakdown();
+  getOrCreateExploreButton();
   syncFilterControls();
-  initMap({
+  loadCatalog(); // fire-and-forget — renders again when data lands
+  await initMap({
     onCenterChange: (lat, lng) => { moveCenter(lat, lng); render(); },
     onMarkerClick: (id) => {
       const results = runSearch();
-      const loc = results.find(r => r.id === id) || wrapLoc(LOCATIONS.find(l => l.id === id));
+      const loc = results.find(r => r.id === id)
+        || wrapLoc(LOCATIONS.find(l => l.id === id) || dynamicLocations.find(l => l.id === id));
       if (loc) openDetail(loc);
     },
   });
 
   document.getElementById('detail-close').onclick = closeDetail;
   document.getElementById('detail').onclick = (e) => { if (e.target.id === 'detail') closeDetail(); };
-  document.getElementById('enter-tour').onclick = () => { if (currentLoc) { const l = currentLoc; closeDetail(); openTour(l); } };
-  document.getElementById('fly-tour').onclick = () => { if (currentLoc) { const l = currentLoc; closeDetail(); openTour(l, { mode: 'fly' }); } };
+  document.getElementById('enter-tour').onclick = () => { if (currentLoc) { const l = currentLoc; closeDetail(); setImmersive('tour', true); openTour(l); } };
+  document.getElementById('fly-tour').onclick = () => { if (currentLoc) { const l = currentLoc; closeDetail(); setImmersive('tour', true); openTour(l, { mode: 'fly' }); } };
+  // tour.js owns #tour-close's primary handler via .onclick — addEventListener
+  // here so this doesn't clobber it, just observes the same click to
+  // restore the letterbox bars.
+  document.getElementById('tour-close').addEventListener('click', () => setImmersive('tour', false));
   document.getElementById('toggle-sv').onclick = toggleStreetView;
   document.getElementById('open-earth').onclick = () => {
     if (currentLoc) window.open(`https://earth.google.com/web/search/${currentLoc.lat},${currentLoc.lng}`, '_blank');
@@ -495,12 +1222,33 @@ function init() {
     if (currentLoc) window.open(`https://www.google.com/maps/dir/?api=1&destination=${currentLoc.lat},${currentLoc.lng}`, '_blank');
   };
 
-  document.querySelectorAll('#map-toggle button').forEach(b => { b.onclick = () => setView(b.dataset.view); });
+  // #explore-toggle also lives inside #map-toggle (getOrCreateExploreButton
+  // appends it there) but isn't a 2D/3D toggle — it has no data-view and
+  // wires its own enter/exitExploreMode handler. Without this guard, this
+  // loop was overwriting that handler with setView(undefined), silently
+  // breaking Explore Globe (setView(undefined) falls into the "hide 3D"
+  // branch instead of ever entering explore mode).
+  document.querySelectorAll('#map-toggle button[data-view]').forEach(b => { b.onclick = () => setView(b.dataset.view); });
+
+  document.getElementById('basemap-toggle').onclick = (e) => {
+    const on = setSatellite(!isSatellite());
+    e.target.classList.toggle('active', on);
+  };
 
   document.getElementById('settings-btn').onclick = openSettings;
   document.getElementById('settings-save').onclick = saveSettings;
   document.getElementById('settings-close').onclick = () => document.getElementById('settings').classList.add('hidden');
   document.getElementById('settings').onclick = (e) => { if (e.target.id === 'settings') e.target.classList.add('hidden'); };
+
+  // Debug route: ?debugTour=studio|large|irregular|windowless opens the
+  // digital twin directly against a synthetic location, bypassing search —
+  // lets the floor-plan generator's edge cases (1 room, many rooms, an
+  // irregular footprint, zero windows) be checked without real data.
+  const debugTour = new URLSearchParams(window.location.search).get('debugTour');
+  if (debugTour && DEBUG_LOCATIONS[debugTour]) {
+    setImmersive('tour', true);
+    openTour(DEBUG_LOCATIONS[debugTour]);
+  }
 
   render();
   fitToRadius(state);
@@ -508,11 +1256,32 @@ function init() {
 
 function wrapLoc(loc) {
   if (!loc) return null;
-  const suit = computeSuitability(loc, state, state.query);
+  const suit = safeSuitability(loc, state, state.query);
   return { ...loc, distMi: haversineMi(state.center.lat, state.center.lng, loc.lat, loc.lng), score: suit.overall, suit };
 }
 
-function barColor(v) { return v >= 75 ? '#7aa874' : v >= 50 ? '#e8b45a' : '#d9744f'; }
+function barColor(v) { return v >= 75 ? '#7aa874' : v >= 50 ? '#c9962b' : '#b5533a'; }
+
+const PREFERS_REDUCED_MOTION = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+// Counts a stat up from 0 to its real value (ease-out cubic) instead of
+// just printing the final number — a small dashboard-style flourish for
+// the detail view's headline stats. Skips straight to the final value
+// under prefers-reduced-motion.
+function animateCount(elId, target, { prefix = '', duration = 700 } = {}) {
+  const el = document.getElementById(elId);
+  if (!el || typeof target !== 'number' || !isFinite(target)) return;
+  if (PREFERS_REDUCED_MOTION) { el.textContent = prefix + target.toLocaleString(); return; }
+  const start = performance.now();
+  function tick(now) {
+    const t = Math.min(1, (now - start) / duration);
+    const eased = 1 - Math.pow(1 - t, 3);
+    el.textContent = prefix + Math.round(target * eased).toLocaleString();
+    if (t < 1) requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+
 function escapeHtml(s) { return String(s).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])); }
 
 init();

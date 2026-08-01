@@ -1,21 +1,25 @@
 // Natural-language query parser. Turns a prompt like "modern industrial
 // warehouse with large windows near downtown Chicago under $500/day" into a
 // structured intent object that drives the filters and the suitability score.
-// Fully offline — a rules/lexicon parser, no API. In production this is where
-// an LLM call would slot in; the downstream code only consumes the structured
-// result, so the swap is isolated.
+//
+// parseQuery() now calls a Groq-backed /api/parse-query endpoint for real
+// language understanding (handles things like "somewhere near water" or
+// "moody and cinematic" that the old lexicon-only matcher couldn't). If
+// Groq is unavailable (no key, network error, bad response), it falls back
+// to the original offline rules parser (parseQueryLocal) so search never
+// breaks entirely.
 
 import { TYPES } from './catalog.js';
 
 const TYPE_LEXICON = {
-  studio:     ['studio', 'sound stage', 'soundstage', 'stage', 'cyc', 'photo studio', 'shooting space'],
-  loft:       ['loft', 'industrial space', 'brick loft', 'artist loft'],
-  warehouse:  ['warehouse', 'industrial warehouse', 'factory', 'hangar', 'garage'],
-  house:      ['house', 'home', 'bungalow', 'craftsman', 'cottage', 'residence', 'residential', 'suburban', 'ranch', 'apartment'],
-  rooftop:    ['rooftop', 'roof deck', 'terrace', 'roof top', 'penthouse'],
+  studio: ['studio', 'sound stage', 'soundstage', 'stage', 'cyc', 'photo studio', 'shooting space'],
+  loft: ['loft', 'industrial space', 'brick loft', 'artist loft'],
+  warehouse: ['warehouse', 'industrial warehouse', 'factory', 'hangar', 'garage'],
+  house: ['house', 'home', 'bungalow', 'craftsman', 'cottage', 'residence', 'residential', 'suburban', 'ranch', 'apartment'],
+  rooftop: ['rooftop', 'roof deck', 'terrace', 'roof top', 'penthouse'],
   storefront: ['storefront', 'bar', 'cafe', 'coffee shop', 'coffee', 'diner', 'restaurant', 'shop', 'retail', 'pub', 'saloon'],
-  gallery:    ['gallery', 'white box', 'white-box', 'art space', 'showroom'],
-  estate:     ['estate', 'mansion', 'ballroom', 'manor', 'villa', 'chateau', 'palace'],
+  gallery: ['gallery', 'white box', 'white-box', 'art space', 'showroom'],
+  estate: ['estate', 'mansion', 'ballroom', 'manor', 'villa', 'chateau', 'palace'],
 };
 
 // mood / architectural style vocabulary — matched against tags + descriptions
@@ -32,12 +36,50 @@ const LIGHT_CONTROLLED = ['blackout', 'black out', 'controlled light', 'no windo
 
 const NUM_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
 
+// A small offline fallback for the most common natural/geographic features,
+// so single-word queries like "lake" or "river" still trigger a live
+// OpenStreetMap search even when Groq is unavailable. Groq (parseQuery's
+// primary path) covers a far wider vocabulary and infers real OSM tags on
+// the fly — this list exists only so search doesn't go completely blind on
+// the common cases when no key is configured. Shape matches PARSE_SYSTEM_PROMPT's
+// naturalFeature schema in server.js exactly, so NaturalFeatures.js can
+// consume either source identically.
+const NATURAL_FEATURE_LEXICON = [
+  { words: ['lake', 'lakes', 'pond', 'ponds', 'reservoir'], feature: { label: 'Lake', icon: '🏞️', osmTags: [{ key: 'natural', value: 'water' }], elementTypes: ['way', 'relation'] } },
+  { words: ['river', 'rivers', 'creek', 'stream'], feature: { label: 'River', icon: '🌊', osmTags: [{ key: 'waterway', value: 'river' }], elementTypes: ['way'] } },
+  { words: ['beach', 'beaches', 'shoreline', 'coastline', 'coast', 'seashore', 'ocean', 'sand'], feature: { label: 'Beach', icon: '🏖️', osmTags: [{ key: 'natural', value: 'beach' }, { key: 'natural', value: 'coastline' }, { key: 'leisure', value: 'beach_resort' }], elementTypes: ['way', 'node'] } },
+  { words: ['mountain', 'mountains', 'peak', 'summit'], feature: { label: 'Mountain Peak', icon: '⛰️', osmTags: [{ key: 'natural', value: 'peak' }, { key: 'natural', value: 'ridge' }], elementTypes: ['node', 'way'] } },
+  { words: ['forest', 'forests', 'woods', 'woodland'], feature: { label: 'Forest', icon: '🌲', osmTags: [{ key: 'natural', value: 'wood' }, { key: 'landuse', value: 'forest' }], elementTypes: ['way', 'relation'] } },
+  { words: ['waterfall', 'waterfalls', 'falls'], feature: { label: 'Waterfall', icon: '💧', osmTags: [{ key: 'waterway', value: 'waterfall' }], elementTypes: ['node', 'way'] } },
+  { words: ['cliff', 'cliffs', 'bluff'], feature: { label: 'Cliff', icon: '🧗', osmTags: [{ key: 'natural', value: 'cliff' }], elementTypes: ['way', 'node'] } },
+  { words: ['cave', 'caves'], feature: { label: 'Cave', icon: '🕳️', osmTags: [{ key: 'natural', value: 'cave_entrance' }], elementTypes: ['node'] } },
+  { words: ['park', 'parks'], feature: { label: 'Park', icon: '🌳', osmTags: [{ key: 'leisure', value: 'park' }], elementTypes: ['way', 'relation'] } },
+  { words: ['island', 'islands'], feature: { label: 'Island', icon: '🏝️', osmTags: [{ key: 'place', value: 'island' }], elementTypes: ['node', 'way'] } },
+  { words: ['skyscraper', 'skyscrapers', 'high rise', 'tower'], feature: { label: 'Skyscraper', icon: '🏙️', osmTags: [{ key: 'building', value: 'yes' }], elementTypes: ['way', 'node'] } },
+];
+
 function matchAny(text, phrases) {
   for (const p of phrases) if (text.includes(p)) return p;
   return null;
 }
 
-export function parseQuery(raw) {
+const M_TO_FT = 3.28084;
+
+// Pulls a size like "300 ft", "300ft", "300 feet", "300 m", "300 meters"
+// out of a natural-feature query, converting meters to feet since that's
+// what NaturalFeatures.js's toleranceFt comparison expects. Returns null if
+// no size is mentioned — do not invent one.
+function parseApproxSizeFt(text) {
+  const m = text.match(/(\d{2,6})\s?(ft|feet|foot|m|meters?|metres?)\b/);
+  if (!m) return null;
+  const amt = +m[1];
+  const isMetric = /^m(eters?|etres?)?$/.test(m[2]);
+  return isMetric ? Math.round(amt * M_TO_FT) : amt;
+}
+
+// The original rules-based parser — kept as a synchronous fallback for when
+// Groq is unavailable (no key set, network error, rate limit, bad JSON, etc).
+function parseQueryLocal(raw) {
   const text = ' ' + raw.toLowerCase().trim() + ' ';
   const out = {
     raw: raw.trim(),
@@ -48,6 +90,7 @@ export function parseQuery(raw) {
     maxRate: null,        // hourly
     radiusMi: null,
     locationText: null,
+    naturalFeature: null, // set below from NATURAL_FEATURE_LEXICON if matched; Groq covers far more
     interpreted: [],      // human-readable chips
   };
   if (!out.raw) return out;
@@ -60,6 +103,20 @@ export function parseQuery(raw) {
   // ---- style / mood words
   for (const s of STYLE_WORDS) if (text.includes(s)) out.styleWords.push(s);
   out.styleWords = [...new Set(out.styleWords)];
+
+  // ---- natural feature (offline fallback lexicon — only used when Groq is
+  // unavailable; a building-type match above still takes precedence for
+  // compound queries like "lake house" since types isn't cleared here)
+  if (!out.types.size) {
+    for (const entry of NATURAL_FEATURE_LEXICON) {
+      if (matchAny(text, entry.words.map(w => ' ' + w))) {
+        // Clone — entry.feature is a shared constant, and approxSizeFt below
+        // is per-query, so mutating it directly would leak across searches.
+        out.naturalFeature = { ...entry.feature, approxSizeFt: parseApproxSizeFt(text) };
+        break;
+      }
+    }
+  }
 
   // ---- natural light
   if (matchAny(text, LIGHT_CONTROLLED)) out.light = 'controlled';
@@ -111,13 +168,69 @@ export function parseQuery(raw) {
   }
 
   // ---- build the "interpreted as" chips
-  for (const t of out.types) out.interpreted.push(`${TYPES[t].icon} ${TYPES[t].label}`);
-  if (out.light) out.interpreted.push(`💡 ${out.light} light`);
-  if (out.minSqft) out.interpreted.push(`📐 ${out.minSqft.toLocaleString()}+ ft²`);
-  if (out.maxRate) out.interpreted.push(`💵 ≤ $${out.maxRate}/hr`);
-  if (out.radiusMi) out.interpreted.push(`📍 ${out.radiusMi} mi radius`);
-  if (out.locationText) out.interpreted.push(`🗺 ${out.locationText}`);
-  for (const s of out.styleWords.slice(0, 4)) out.interpreted.push(`✨ ${s}`);
+  out.interpreted = buildInterpretedChips(out);
 
   return out;
+}
+
+// Builds the "interpreted as" chips array from a parsed-filter object,
+// regardless of whether it came from Groq or the local rules parser.
+function buildInterpretedChips(out) {
+  const chips = [];
+  for (const t of out.types) if (TYPES[t]) chips.push(`${TYPES[t].icon} ${TYPES[t].label}`);
+  if (out.naturalFeature) {
+    chips.push(`${out.naturalFeature.icon || '📍'} ${out.naturalFeature.label}`);
+    if (out.naturalFeature.approxSizeFt) chips.push(`📏 ~${out.naturalFeature.approxSizeFt.toLocaleString()} ft across`);
+  }
+  if (out.light) chips.push(`💡 ${out.light} light`);
+  if (out.minSqft) chips.push(`📐 ${out.minSqft.toLocaleString()}+ ft²`);
+  if (out.maxRate) chips.push(`💵 ≤ $${out.maxRate}/hr`);
+  if (out.radiusMi) chips.push(`📍 ${out.radiusMi} mi radius`);
+  if (out.locationText) chips.push(`🗺 ${out.locationText}`);
+  for (const s of out.styleWords.slice(0, 4)) chips.push(`✨ ${s}`);
+  return chips;
+}
+
+// Public entry point. Tries Groq first (real language understanding — "a
+// place near water", "somewhere moody and cinematic" work, not just exact
+// lexicon matches). Falls back to the offline rules parser on any failure
+// (no key set, network error, rate limit, malformed response) so search
+// never breaks entirely if Groq is down or unconfigured.
+export async function parseQuery(raw) {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return parseQueryLocal(raw || '');
+
+  try {
+    const res = await fetch('/api/parse-query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: trimmed }),
+      // The server already bounds its own Groq call to 15s; this is
+      // defense in depth so a hung connection to our own server can't
+      // leave the search button stuck on "Reading…" forever.
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) throw new Error(`parse-query failed: ${res.status}`);
+    const data = await res.json();
+
+    const out = {
+      raw: trimmed,
+      types: new Set(Array.isArray(data.types) ? data.types.filter(t => TYPES[t]) : []),
+      styleWords: Array.isArray(data.styleWords) ? data.styleWords : [],
+      light: data.light || null,
+      minSqft: typeof data.minSqft === 'number' ? data.minSqft : null,
+      maxRate: typeof data.maxRate === 'number' ? data.maxRate : null,
+      radiusMi: typeof data.radiusMi === 'number' ? data.radiusMi : null,
+      locationText: data.locationText || null,
+      naturalFeature: (data.naturalFeature && Array.isArray(data.naturalFeature.osmTags) && data.naturalFeature.osmTags.length)
+        ? data.naturalFeature
+        : null,
+      interpreted: [],
+    };
+    out.interpreted = buildInterpretedChips(out);
+    return out;
+  } catch (e) {
+    console.warn('[nlp] Groq parse failed, falling back to local parser:', e.message);
+    return parseQueryLocal(raw);
+  }
 }

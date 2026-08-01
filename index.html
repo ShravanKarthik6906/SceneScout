@@ -4,33 +4,90 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SceneScout — Location Scouting for Photo &amp; Film</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%2317130f'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%23c1493a' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='3' fill='%23c1493a'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="vendor/maplibre-gl/maplibre-gl.css">
+<link rel="stylesheet" href="css/style.css">
   <script type="importmap">
-    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+    { "imports": {
+      "three": "/vendor/three/three.module.js",
+      "three-mesh-bvh": "/vendor/three-mesh-bvh/index.module.js",
+      "pdfjs-dist/legacy/build/pdf.js": "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.mjs"
+    } }
   </script>
 </head>
 <body>
+  <!-- literal 2.35:1-inspired letterbox bars — real elements (not a
+       background trick) so app.js can retract them independently when
+       entering 3D/street view/the tour. See .letterbox in css/style.css. -->
+  <div class="letterbox top" id="letterbox-top" aria-hidden="true"></div>
+  <div class="letterbox bottom" id="letterbox-bottom" aria-hidden="true"></div>
+
   <header>
     <div class="logo">Scene<em>Scout</em></div>
-    <div class="tagline">Find it on the map · Walk it in 3D · Check the street</div>
+    <div class="tagline">To see a location, select 3D and Explore Globe options</div>
+    <div id="bg-process-indicator" class="bg-process-indicator hidden" role="status">
+      <span class="bg-pulse-dot"></span>
+      <span id="bg-process-text">Processing background task...</span>
+    </div>
     <div class="spacer"></div>
     <button id="settings-btn">⚙ Settings</button>
   </header>
 
   <div id="layout">
     <aside id="sidebar">
+      <!-- clapperboard clap-stick — purely decorative, aria-hidden — see
+           .slate-stick in css/style.css for the diagonal-stripe treatment
+           and the clap-on-search animation triggered from app.js. -->
+      <div class="slate-stick" id="slate-stick" aria-hidden="true"></div>
       <section id="ai-search">
-        <label class="ai-label">Describe the location you need</label>
+        <label class="ai-label">Scene</label>
         <div class="ai-box">
           <textarea id="ai-input" rows="2" placeholder="e.g. Modern industrial warehouse with large windows near downtown Chicago under $500/day"></textarea>
           <button id="ai-go" title="Interpret with AI">Search ✨</button>
         </div>
-        <div id="ai-examples" class="ai-examples"></div>
         <div id="ai-interpreted" class="ai-interpreted hidden"></div>
       </section>
+        <!-- Script Breakdown Panel -->
+        <details id="script-breakdown" class="panel-details">
+          <summary class="panel-summary">
+            <span class="summary-icon">📜</span>
+            <span class="summary-title">Script Breakdown (PDF Screenplay)</span>
+            <span class="summary-badge">PDF AI</span>
+          </summary>
+          <div class="panel-content">
+            <label id="script-drop-zone" for="script-upload" class="drop-zone">
+              <div class="drop-zone-icon">📄</div>
+              <div class="drop-zone-text">Drop screenplay PDF or <strong>click to upload</strong></div>
+              <div class="drop-zone-subtext">Max 5MB file size</div>
+              <input type="file" id="script-upload" accept="application/pdf" class="file-input-hidden" />
+            </label>
+            <div id="script-status" class="script-status hidden"></div>
+            
+            <div id="script-results-wrap" class="script-results-wrap hidden">
+              <div class="results-header">
+                <span class="results-title">Extracted Locations & Criteria</span>
+                <span id="results-count" class="results-count">0 tags</span>
+              </div>
+              <div id="script-results" class="script-results"></div>
+              <button id="enhance-ai" class="btn btn-accent enhance-btn hidden">
+                ✨ Filter Map with Script Locations
+              </button>
 
-      <details id="filters-wrap" open>
+              <!-- Persistent Script Location Reference Checklist -->
+              <div id="script-checklist-panel" class="checklist-panel hidden">
+                <div class="checklist-header">
+                  <span class="checklist-title">📍 Required Script Locations</span>
+                  <span id="checklist-progress" class="checklist-progress">0/0 done</span>
+                </div>
+                <div class="checklist-subtext">Always-visible reference list for your screenplay locations:</div>
+                <div id="script-checklist-items" class="checklist-items"></div>
+              </div>
+            </div>
+          </div>
+        </details>
+
+      <details id="filters-wrap">
         <summary>Refine filters</summary>
       <section id="filters">
         <div class="filter-grid">
@@ -60,8 +117,8 @@
             <input type="range" id="sqft-range" min="0" max="10000" step="250" value="0">
           </div>
           <div class="filter-row">
-            <label>Budget <b id="rate-label"></b></label>
-            <input type="range" id="rate-range" min="100" max="600" step="25" value="600">
+            <label>Budget/day <b id="rate-label"></b></label>
+            <input type="range" id="rate-range" min="100" max="700" step="25" value="700">
           </div>
         </div>
         <div class="filter-grid">
@@ -86,16 +143,26 @@
         </div>
       </section>
       </details>
-      <div id="results-meta"></div>
-      <div id="results"></div>
     </aside>
     <main id="map">
       <div id="map2d"></div>
       <div id="map3d"></div>
+      <!-- exposure-style HUD readout: radius + result count, updated by
+           app.js's render(). -->
+      <div id="map-hud">
+        <span id="hud-radius"></span>
+        <span id="hud-count"></span>
+      </div>
       <div id="map-toggle">
         <button data-view="2d" class="active">🗺 2D</button>
         <button data-view="3d">🌎 3D</button>
       </div>
+      <!-- swaps the 2D basemap between the cinematic dark tiles and real
+           satellite imagery — see setSatellite() in js/map.js. -->
+      <button id="basemap-toggle" title="Toggle satellite imagery">🛰 SATELLITE</button>
+      <!-- shutter-style iris wipe on search submit — see .play in
+           css/style.css and playIrisTransition() in js/app.js. -->
+      <div id="iris-transition"></div>
     </main>
   </div>
 
@@ -145,6 +212,7 @@
     <canvas id="tour-minimap" width="380" height="380"></canvas>
     <div id="tour-help"></div>
     <div id="tour-lens">~35mm · FOV 70°</div>
+    <div id="tour-fps" class="hidden"></div>
   </div>
 
   <!-- settings -->
@@ -169,7 +237,15 @@
     </div>
   </div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <div id="global-loading-overlay" class="loading-overlay hidden">
+    <div class="loading-box">
+      <div class="spinner"></div>
+      <div id="global-loading-text" class="loading-text">Processing background task...</div>
+    </div>
+  </div>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="vendor/maplibre-gl/maplibre-gl.js"></script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

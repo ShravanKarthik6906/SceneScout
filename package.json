@@ -1,32 +1,18 @@
 {
-  "name": "scoutai",
+  "name": "photoscout-clean",
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint"
+    "dev": "node --env-file-if-exists=.env server.js",
+    "start": "node server.js",
+    "build:catalog": "node scripts/build-catalog.js"
   },
   "dependencies": {
-    "@googlemaps/js-api-loader": "^2.1.1",
-    "@supabase/ssr": "^0.12.3",
-    "@supabase/supabase-js": "^2.110.7",
-    "nanoid": "^6.0.0",
-    "next": "14.2.35",
-    "openai": "^6.48.0",
-    "react": "^18",
-    "react-dom": "^18",
-    "zustand": "^5.0.14"
-  },
-  "devDependencies": {
-    "@types/node": "^20",
-    "@types/react": "^18",
-    "@types/react-dom": "^18",
-    "eslint": "^8",
-    "eslint-config-next": "14.2.35",
-    "postcss": "^8",
-    "tailwindcss": "^3.4.1",
-    "typescript": "^5"
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "leaflet": "1.9.4",
+    "maplibre-gl": "4.7.1",
+    "three": "0.160.0",
+    "three-mesh-bvh": "^0.9.13"
   }
 }

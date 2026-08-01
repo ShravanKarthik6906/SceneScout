@@ -3,33 +3,78 @@
 // windows and skylights, style-based furnishing, and three camera modes
 // (first-person walk, orbit dollhouse, top-down plan).
 //
+// Walk mode navigates in the style of Google Maps / Street View: click a spot
+// on the floor and the camera walks there along a route planned through the
+// doorways, drag to look around, wheel to zoom the lens. WASD and the arrow
+// keys pivot the view in place — they look, they don't move.
+//
 // In production the geometry here would be replaced by reconstructed meshes
 // (Matterport SDK / Gaussian splats from listing photos); the controls,
 // collision, and UI layer would stay the same.
 
 import * as THREE from 'three';
+import { generateFloorplan, hashStr, mulberry32 } from './floorplanGen.js';
+import { resolvePreset, colorTempToHex } from './stylePresets.js';
+import { RoomEnvironment } from '/vendor/three/jsm/environments/RoomEnvironment.js';
+import { RectAreaLightUniformsLib } from '/vendor/three/jsm/lights/RectAreaLightUniformsLib.js';
+import { EffectComposer } from '/vendor/three/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from '/vendor/three/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from '/vendor/three/jsm/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from '/vendor/three/jsm/postprocessing/ShaderPass.js';
+import { OutputPass } from '/vendor/three/jsm/postprocessing/OutputPass.js';
+import { FXAAShader } from '/vendor/three/jsm/shaders/FXAAShader.js';
+import { mergeGeometries } from '/vendor/three/jsm/utils/BufferGeometryUtils.js';
+import { MeshBVH, computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
+
+THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
+THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
+
+// No real HDR file to load (this build has no outbound network access to
+// fetch one) — RectAreaLightUniformsLib.init() and a procedural PMREM
+// environment (RoomEnvironment: a small lit box, not a real photo) still
+// give MeshStandardMaterial/RectAreaLight correct-looking reflections and
+// falloff instead of the flat, reflectionless look plain materials have
+// with no environment map at all.
+RectAreaLightUniformsLib.init();
 
 const WALL_T = 0.16;
 const DOOR_H = 2.1;
 const EYE = 1.6;
-const CROUCH_EYE = 1.02;
+const TOUR_EXPOSURE = 1.0;
 
 let ctx = null; // active tour context
 
-// ---------------------------------------------------------------- utilities
-
-function mulberry32(seed) {
-  return function () {
-    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+// Read-only introspection for the debug route and Part 3's FPS overlay —
+// no behavior depends on this, safe to leave in.
+if (typeof window !== 'undefined') {
+  window.__tourDebug = {
+    pos: () => ctx ? { x: ctx.x, z: ctx.z, mode: ctx.mode } : null,
+    look: () => {
+      if (!ctx) return null;
+      const d = ctx.camera.getWorldDirection(new THREE.Vector3());
+      return { yaw: ctx.yaw, pitch: ctx.pitch, dir: { x: d.x, y: d.y, z: d.z } };
+    },
   };
 }
-function hashStr(s) {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
-  return h >>> 0;
+
+// ---------------------------------------------------------------- utilities
+
+// scripts/build-catalog.js bakes one of 8 fixed room templates into every
+// Kaggle-derived listing (see catalog.js's header comment) regardless of
+// its real sqft, which is exactly the "every warehouse looks the same"
+// problem this app is trying to get away from. Those listings are tagged
+// `_source` at build time — for them, generate a floorplan from the real
+// sqft/ceiling data instead of trusting the baked template. Hand-authored
+// data.js locations (no `_source`) keep their authored floorplan; a debug
+// fixture can force a specific floorplan via `_forceFloorplan` to test an
+// edge case the generator wouldn't naturally produce (e.g. zero windows).
+function resolveFloorplan(listing) {
+  if (listing._forceFloorplan) return listing._forceFloorplan;
+  if (!listing._source && listing.floorplan?.rooms?.length) return listing.floorplan;
+  const fp = generateFloorplan(listing);
+  // Belt-and-braces: even a malformed/empty authored floorplan (or a future
+  // generator bug) should never leave the scene with zero rooms.
+  return fp.rooms.length ? fp : generateFloorplan({ ...listing, type: 'default' });
 }
 
 function planBounds(rooms) {
@@ -107,7 +152,12 @@ function applyDoors(segments, doors) {
 // ------------------------------------------------------------ mesh helpers
 
 function mat(color, opts = {}) {
-  return new THREE.MeshStandardMaterial({ color, roughness: 0.88, metalness: 0.02, ...opts });
+  // envMapIntensity default is 1.0 in three.js, which stacks the PMREM
+  // environment fully on top of direct lighting — on light preset colors
+  // (near-white walls) that was blowing highlights out to solid white.
+  // Kept subtle here since it's still contributing real reflections, just
+  // not doubling as a second light source.
+  return new THREE.MeshStandardMaterial({ color, roughness: 0.88, metalness: 0.02, envMapIntensity: 0.35, ...opts });
 }
 
 function addBox(group, w, h, d, material, x, y, z, rotY = 0, shadows = true) {
@@ -127,9 +177,12 @@ function addCyl(group, rt, rb, h, material, x, y, z, seg = 14) {
   return m;
 }
 
-let windowTexture = null;
-function getWindowTexture() {
-  if (windowTexture) return windowTexture;
+// Mullion pattern is preset-driven (see stylePresets.js's windowMullion) —
+// a steel-sash industrial window reads very differently from a minimal
+// contemporary pane, purely from how the frame lines are drawn here.
+const windowTextures = {};
+function getWindowTexture(style = 'grid') {
+  if (windowTextures[style]) return windowTextures[style];
   const c = document.createElement('canvas');
   c.width = 128; c.height = 160;
   const g = c.getContext('2d');
@@ -139,11 +192,53 @@ function getWindowTexture() {
   grad.addColorStop(1, '#e8d9b8');
   g.fillStyle = grad; g.fillRect(0, 0, 128, 160);
   g.fillStyle = 'rgba(30,34,44,0.9)';
-  g.fillRect(60, 0, 8, 160); g.fillRect(0, 76, 128, 8);
-  g.strokeStyle = 'rgba(30,34,44,0.9)'; g.lineWidth = 12;
-  g.strokeRect(0, 0, 128, 160);
-  windowTexture = new THREE.CanvasTexture(c);
-  return windowTexture;
+  g.strokeStyle = 'rgba(30,34,44,0.9)';
+
+  if (style === 'minimal') {
+    g.lineWidth = 6;
+    g.strokeRect(3, 3, 122, 154);
+  } else if (style === 'curtainWall') {
+    g.lineWidth = 8;
+    for (let x = 0; x <= 128; x += 32) { g.fillRect(x - 3, 0, 6, 160); }
+    g.strokeRect(0, 0, 128, 160);
+  } else if (style === 'steelSash') {
+    g.lineWidth = 5;
+    for (let y = 0; y < 4; y++) g.fillRect(0, y * 40 - 2, 128, 5);
+    g.fillRect(60, 0, 6, 160);
+    g.strokeStyle = 'rgba(20,22,28,0.95)'; g.lineWidth = 10;
+    g.strokeRect(0, 0, 128, 160);
+  } else { // 'grid' — original default
+    g.fillRect(60, 0, 8, 160); g.fillRect(0, 76, 128, 8);
+    g.lineWidth = 12;
+    g.strokeRect(0, 0, 128, 160);
+  }
+
+  const tex = new THREE.CanvasTexture(c);
+  windowTextures[style] = tex;
+  return tex;
+}
+
+// Real 3D mullion bars in front of the glass pane, matching the same
+// preset-driven pattern as the backdrop texture drawn above (kept in sync
+// by hand since one is a canvas and the other is geometry, but both key
+// off the same `style` string).
+function addWindowMullions(group, w, h, style, trimMat) {
+  const bar = (bw, bh, x, y) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, 0.03), trimMat);
+    m.position.set(x, y, 0.02);
+    group.add(m);
+  };
+  if (style === 'minimal') {
+    // frame only, no interior bars
+  } else if (style === 'curtainWall') {
+    for (let x = -w / 2 + w / 4; x < w / 2; x += w / 4) bar(0.04, h, x, 0);
+  } else if (style === 'steelSash') {
+    bar(0.035, h, 0, 0);
+    for (let y = -h / 2 + h / 4; y < h / 2; y += h / 4) bar(w, 0.035, 0, y);
+  } else { // 'grid'
+    bar(0.045, h, 0, 0);
+    bar(w, 0.045, 0, 0);
+  }
 }
 
 function makeLabelSprite(text) {
@@ -167,7 +262,7 @@ function makeLabelSprite(text) {
 
 // ------------------------------------------------------------- furnishings
 
-function furnish(group, room, listing, rand) {
+function furnish(group, room, listing, rand, density = 1) {
   const p = listing.palette;
   const cx = room.x + room.w / 2, cz = room.z + room.d / 2;
   const wood = mat('#6b4f35'), dark = mat('#23262e'), lightGray = mat('#c9cdd4');
@@ -433,9 +528,37 @@ function furnish(group, room, listing, rand) {
       sl2.position.set(cx, 2.2, cz); group.add(sl2);
       break;
     }
+    case 'bath': {
+      addBox(group, 0.6, 0.42, 0.42, lightGray, room.x + 0.4, 0.21, room.z + 0.35);
+      addBox(group, 0.55, 0.75, 0.5, lightGray, room.x + room.w - 0.4, 0.38, room.z + 0.3);
+      const mirror = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.65),
+        new THREE.MeshBasicMaterial({ color: '#dfeaf5' }));
+      mirror.position.set(room.x + room.w - 0.4, 1.4, room.z + 0.06); group.add(mirror);
+      break;
+    }
+    case 'hall': {
+      // Circulation only — deliberately minimal so it reads as a passage,
+      // not a destination, but never bare/broken.
+      rug(cx, cz, Math.min(room.w * 0.7, room.d - 0.4), Math.min(room.d * 0.8, room.w - 0.4), shadeHex(p.floor, -20));
+      const sconce = new THREE.PointLight('#ffe6c2', 5, 4, 2);
+      sconce.position.set(cx, room.h - 0.4, cz); group.add(sconce);
+      break;
+    }
+    case 'storage': {
+      shelfRack(cx, room.z + 0.5, 0, Math.min(room.w * 0.8, 3));
+      break;
+    }
+    // Any room style the app doesn't have a specific archetype for yet
+    // (a new StylePreset, a debug fixture, an unrecognized type) — render
+    // something plausible rather than an empty box.
+    default: {
+      rug(cx, cz, Math.min(3, room.w * 0.6), Math.min(2.2, room.d * 0.6), shadeHex(p.floor, -20));
+      table(cx, cz, Math.min(1.1, room.w * 0.3), Math.min(0.7, room.d * 0.3));
+      break;
+    }
   }
   // tiny deterministic scatter so rooms don't feel copy-pasted
-  if (rand() > 0.5 && room.w > 4 && !['deck', 'studio'].includes(room.style)) {
+  if (rand() > 1 - 0.5 * density && room.w > 4 && !['deck', 'studio', 'hall'].includes(room.style)) {
     plant(room.x + room.w - 0.55, room.z + room.d - 0.55);
   }
 }
@@ -450,18 +573,18 @@ function shadeHex(hex, amt) {
 
 // ------------------------------------------------------------ scene build
 
-function buildScene(listing) {
-  const fp = listing.floorplan;
+function buildScene(listing, fp) {
   const rooms = fp.rooms;
   const b = planBounds(rooms);
   const p = listing.palette;
   const outdoor = !!listing.outdoor;
+  const preset = resolvePreset(listing);
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(outdoor ? '#141b2a' : '#0b0d13');
   scene.fog = new THREE.Fog(scene.background, 40, 120);
 
-  const wallMat = mat(p.wall);
+  const wallMat = mat(p.wall, preset.wallFinish);
   const floorMats = {};
   const ceilings = new THREE.Group();
 
@@ -474,7 +597,12 @@ function buildScene(listing) {
   ground.receiveShadow = true;
   scene.add(ground);
 
-  // walls
+  // walls — every solid piece also gets pushed into collisionGeos (already
+  // in world space via .translate(), so a straight merge is enough) for
+  // the BVH collider built below. Door openings are genuinely absent from
+  // this geometry (applyDoors already cut them out), not flagged/ignored,
+  // so collision against it is exact rather than approximated.
+  const collisionGeos = [];
   const segments = computeWallSegments(rooms);
   const { pieces, lintels } = applyDoors(segments, fp.doors);
   for (const w of pieces) {
@@ -486,6 +614,7 @@ function buildScene(listing) {
     m.position.set(w.dir === 'h' ? mid : w.c, w.h / 2, w.dir === 'h' ? w.c : mid);
     m.castShadow = true; m.receiveShadow = true;
     scene.add(m);
+    collisionGeos.push(geo.clone().translate(m.position.x, m.position.y, m.position.z));
   }
   for (const l of lintels) {
     const len = l.a2 - l.a1, mid = (l.a1 + l.a2) / 2, h = l.y2 - l.y1;
@@ -496,14 +625,76 @@ function buildScene(listing) {
     m.position.set(l.dir === 'h' ? mid : l.c, (l.y1 + l.y2) / 2, l.dir === 'h' ? l.c : mid);
     m.castShadow = true; m.receiveShadow = true;
     scene.add(m);
+    // lintels sit above DOOR_H — irrelevant to a ~1.7m-tall player capsule,
+    // skipped from collision on purpose (not an oversight).
   }
 
+  // baseboard + door-frame trim, derived from the same wall/door geometry
+  // above rather than a per-listing constant — works for any wall run or
+  // door count since it just rides along pieces/fp.doors.
+  const trimMat = mat(shadeHex(p.wall, -38), { roughness: 0.55 });
+  const BB_H = 0.11, BB_OUT = WALL_T / 2 + 0.015;
+  for (const w of pieces) {
+    const len = w.a2 - w.a1, mid = (w.a1 + w.a2) / 2;
+    const geo = w.dir === 'h'
+      ? new THREE.BoxGeometry(len, BB_H, WALL_T + BB_OUT)
+      : new THREE.BoxGeometry(WALL_T + BB_OUT, BB_H, len);
+    const bb = new THREE.Mesh(geo, trimMat);
+    bb.position.set(w.dir === 'h' ? mid : w.c, BB_H / 2, w.dir === 'h' ? w.c : mid);
+    bb.receiveShadow = true;
+    scene.add(bb);
+  }
+  // Door jambs are identical geometry (jambH is a constant, only position
+  // varies) across every door in the scene — one InstancedMesh instead of
+  // 2 draw calls per door, same visual result at a fraction of the cost on
+  // the large layouts Stage 0 can now generate (a 13-room house has 24+).
+  const FRAME_W = 0.08;
+  const jambH = DOOR_H + FRAME_W * 0.5;
+  const jambPositions = [];
+  for (const d of fp.doors) {
+    if (d.dir === 'v') {
+      for (const side of [-1, 1]) jambPositions.push([d.x, jambH / 2, d.z + side * (d.width / 2)]);
+      const head = new THREE.Mesh(new THREE.BoxGeometry(FRAME_W, FRAME_W, d.width + FRAME_W), trimMat);
+      head.position.set(d.x, DOOR_H + FRAME_W / 2, d.z);
+      scene.add(head);
+    } else {
+      for (const side of [-1, 1]) jambPositions.push([d.x + side * (d.width / 2), jambH / 2, d.z]);
+      const head = new THREE.Mesh(new THREE.BoxGeometry(d.width + FRAME_W, FRAME_W, FRAME_W), trimMat);
+      head.position.set(d.x, DOOR_H + FRAME_W / 2, d.z);
+      scene.add(head);
+    }
+  }
+  if (jambPositions.length) {
+    const jambGeo = new THREE.BoxGeometry(FRAME_W, jambH, FRAME_W);
+    const jambs = new THREE.InstancedMesh(jambGeo, trimMat, jambPositions.length);
+    jambs.castShadow = true;
+    const m4 = new THREE.Matrix4();
+    jambPositions.forEach(([x, y, z], i) => {
+      m4.setPosition(x, y, z);
+      jambs.setMatrixAt(i, m4);
+      collisionGeos.push(jambGeo.clone().translate(x, y, z));
+    });
+    scene.add(jambs);
+  }
+
+  // (The collision BVH is built further down, once furniture has been placed
+  // — props are solid too, so they have to be in it. See buildCollisionBVH.)
+
   // floors, ceilings, windows, skylights, furniture, labels, room lights
-  const winTex = getWindowTexture();
+  const winTex = getWindowTexture(preset.windowMullion);
+  // RectAreaLight uses an LTC shading model that's real-time-expensive per
+  // light — a 13-room house can have 30+ window openings, and a light per
+  // window would tank frame rate on exactly the large/generous layouts
+  // Stage 0 now generates. Budget it: every window still gets its glass/
+  // mullion geometry (so the room never looks unlit or broken), but only
+  // the first WINDOW_LIGHT_BUDGET actually get a real light — the per-room
+  // point light already covers general fill for the rest.
+  const WINDOW_LIGHT_BUDGET = 24;
+  let windowLightsUsed = 0;
   const rand = mulberry32(hashStr(listing.id));
   for (const r of rooms) {
     const fkey = r.style === 'studio' || r.style === 'gallery' ? '#e8e8e6' : p.floor;
-    if (!floorMats[fkey]) floorMats[fkey] = mat(fkey, { roughness: 0.75 });
+    if (!floorMats[fkey]) floorMats[fkey] = mat(fkey, preset.floorFinish);
     const fl = new THREE.Mesh(new THREE.PlaneGeometry(r.w, r.d), floorMats[fkey]);
     fl.rotation.x = -Math.PI / 2;
     fl.position.set(r.x + r.w / 2, 0, r.z + r.d / 2);
@@ -528,40 +719,71 @@ function buildScene(listing) {
       }
     }
 
-    // windows: glowing textured planes set just inside each exterior wall
+    // windows: a canvas-textured backdrop (the "sky" beyond the glass) plus
+    // a transmissive glass pane and preset-driven mullion bars in front of
+    // it, and a RectAreaLight sized to the opening so the window is an
+    // actual light source into the room, not just a lit-looking texture.
     const win = r.win || {};
     const winPlane = (wall, i, count) => {
-      const m = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.7),
-        new THREE.MeshBasicMaterial({ map: winTex }));
+      const W = 1.5, H = 1.7;
       const off = WALL_T / 2 + 0.03;
       const y = Math.min(0.95 + 0.85, r.h - 0.5); // center of window
-      if (wall === 'n') {
-        m.position.set(r.x + (i + 1) * r.w / (count + 1), y, r.z + off);
-      } else if (wall === 's') {
-        m.position.set(r.x + (i + 1) * r.w / (count + 1), y, r.z + r.d - off);
-        m.rotation.y = Math.PI;
-      } else if (wall === 'w') {
-        m.position.set(r.x + off, y, r.z + (i + 1) * r.d / (count + 1));
-        m.rotation.y = Math.PI / 2;
-      } else {
-        m.position.set(r.x + r.w - off, y, r.z + (i + 1) * r.d / (count + 1));
-        m.rotation.y = -Math.PI / 2;
+      let x, z, rotY;
+      if (wall === 'n') { x = r.x + (i + 1) * r.w / (count + 1); z = r.z + off; rotY = 0; }
+      else if (wall === 's') { x = r.x + (i + 1) * r.w / (count + 1); z = r.z + r.d - off; rotY = Math.PI; }
+      else if (wall === 'w') { x = r.x + off; z = r.z + (i + 1) * r.d / (count + 1); rotY = Math.PI / 2; }
+      else { x = r.x + r.w - off; z = r.z + (i + 1) * r.d / (count + 1); rotY = -Math.PI / 2; }
+
+      const group = new THREE.Group();
+      group.position.set(x, y, z);
+      group.rotation.y = rotY;
+
+      const backdrop = new THREE.Mesh(new THREE.PlaneGeometry(W, H), new THREE.MeshBasicMaterial({ map: winTex }));
+      backdrop.position.z = -0.015;
+      group.add(backdrop);
+
+      const glass = new THREE.Mesh(new THREE.PlaneGeometry(W * 0.92, H * 0.92), new THREE.MeshPhysicalMaterial({
+        color: '#dceeff', transmission: 0.9, roughness: 0.06, metalness: 0, thickness: 0.02,
+        ior: 1.5, transparent: true, opacity: 0.35,
+      }));
+      group.add(glass);
+
+      addWindowMullions(group, W, H, preset.windowMullion, trimMat);
+
+      if (windowLightsUsed < WINDOW_LIGHT_BUDGET) {
+        windowLightsUsed++;
+        const rl = new THREE.RectAreaLight(colorTempToHex(6500), 1.8, W * 0.9, H * 0.9);
+        rl.position.z = -0.05;
+        rl.rotation.y = Math.PI; // RectAreaLight emits along -Z of its local frame
+        group.add(rl);
       }
-      scene.add(m);
+
+      scene.add(group);
     };
     for (const wall of ['n', 's', 'e', 'w']) {
       const count = win[wall] || 0;
       for (let i = 0; i < count; i++) winPlane(wall, i, count);
     }
 
-    // per-room fill light
+    // per-room fill light — kept deliberately subtle now that windows carry
+    // real illumination via RectAreaLight (Part 1); this was tuned as the
+    // *only* light source before that existed, and left at that intensity
+    // it was double-lighting every room and blowing highlights out to
+    // solid white, worst from the top-down dollhouse/floor-plan angle
+    // where many rooms' fill lights are all visible at once.
     if (!r.open) {
-      const rl = new THREE.PointLight('#fff1e0', Math.min(60, 12 + r.w * r.d * 0.5), 0, 2);
+      const rl = new THREE.PointLight('#fff1e0', Math.min(20, 5 + r.w * r.d * 0.18), 0, 2);
       rl.position.set(r.x + r.w / 2, r.h - 0.4, r.z + r.d / 2);
       scene.add(rl);
     }
 
-    furnish(scene, r, listing, rand);
+    // Furniture goes into its own group so its solids can be harvested for
+    // the collision BVH below — walking through a couch made every clearance
+    // judgement in the app unreliable, which is the whole point of the twin.
+    const props = new THREE.Group();
+    furnish(props, r, listing, rand, preset.furnitureDensity);
+    scene.add(props);
+    collectPropCollision(props, collisionGeos);
 
     const label = makeLabelSprite(r.name);
     label.position.set(r.x + r.w / 2, Math.min(r.h - 0.35, 2.45), r.z + r.d / 2);
@@ -570,10 +792,14 @@ function buildScene(listing) {
   }
   scene.add(ceilings);
 
-  // global lighting
-  const hemi = new THREE.HemisphereLight('#bfd4ff', '#4a3f36', outdoor ? 1.4 : 0.95);
+  // global lighting — color temperature and intensity come from the
+  // resolved StylePreset rather than being fixed for every scene; the
+  // outdoor multiplier on top preserves exteriors reading brighter than
+  // interiors regardless of which preset a listing resolved to.
+  const sunColor = colorTempToHex(preset.lightTempK);
+  const hemi = new THREE.HemisphereLight('#bfd4ff', '#4a3f36', preset.hemiIntensity * (outdoor ? 1.45 : 1));
   scene.add(hemi);
-  const sun = new THREE.DirectionalLight('#ffe8c8', outdoor ? 2.4 : 1.8);
+  const sun = new THREE.DirectionalLight(sunColor, preset.sunIntensity * (outdoor ? 1.25 : 1));
   sun.position.set(b.cx + b.w, Math.max(b.w, b.d) * 0.9, b.cz + b.d * 0.6);
   sun.target.position.set(b.cx, 0, b.cz);
   sun.castShadow = true;
@@ -601,65 +827,371 @@ function buildScene(listing) {
     }
   }
 
-  return { scene, ceilings, bounds: b };
+  // Collision BVH — a real accelerated structure over the actual wall, jamb
+  // and furniture solids, not an approximation of them. Built here rather
+  // than before the room loop because furniture is only placed inside it.
+  const collisionGeometry = mergeGeometries(collisionGeos, false);
+  collisionGeometry.computeBoundsTree();
+  const collisionBVH = new MeshBVH(collisionGeometry);
+
+  for (const g of collisionGeos) g.dispose();
+
+  return { scene, ceilings, bounds: b, collisionBVH, sun };
+}
+
+// ------------------------------------------------- furniture collision
+// Harvests solid, bump-into-able furniture out of a furnished room group as
+// world-space boxes for the collision BVH. Deliberately an AABB per prop
+// rather than the true mesh: you want to be stopped by the couch, not to
+// squeeze between its cushions, and it keeps the BVH cheap.
+//
+// The filters exclude things a person walks under or past rather than into:
+// wall art and mirrors (mounted high), ceiling fixtures and string lights,
+// rugs (no height), and light sprites/labels (not meshes at all).
+const PROP_MIN_FOOTPRINT = 0.03;  // m² — smaller than this is clutter, not an obstacle
+const PROP_MIN_HEIGHT = 0.2;      // m — below this you step over it (rugs, thresholds)
+const PROP_MAX_BASE = 1.3;        // m — above this it's wall/ceiling mounted
+
+const _propBox = new THREE.Box3();
+function collectPropCollision(root, out) {
+  root.updateMatrixWorld(true);
+  root.traverse(o => {
+    if (!o.isMesh || o.isInstancedMesh) return;
+    if (!o.geometry || !o.geometry.attributes || !o.geometry.attributes.position) return;
+    _propBox.setFromObject(o);
+    const sx = _propBox.max.x - _propBox.min.x;
+    const sy = _propBox.max.y - _propBox.min.y;
+    const sz = _propBox.max.z - _propBox.min.z;
+    if (_propBox.min.y > PROP_MAX_BASE) return;
+    if (sy < PROP_MIN_HEIGHT) return;
+    if (sx * sz < PROP_MIN_FOOTPRINT) return;
+    out.push(new THREE.BoxGeometry(sx, sy, sz).translate(
+      (_propBox.min.x + _propBox.max.x) / 2,
+      (_propBox.min.y + _propBox.max.y) / 2,
+      (_propBox.min.z + _propBox.max.z) / 2));
+  });
+}
+
+// Room centres are usually exactly where the furniture is, so now that props
+// are solid, spawning (or jumping via a room chip) at one can drop you inside
+// a couch. Sample the room on a grid at torso height and take the point with
+// the most clearance from any solid.
+function findClearPoint(room, bvh) {
+  const N = 7, PROBE_Y = 0.9, MAX_USEFUL = 3;
+  const target = {}, p = new THREE.Vector3();
+  let best = { x: room.x + room.w / 2, z: room.z + room.d / 2, clearance: -1 };
+  for (let i = 1; i <= N; i++) {
+    for (let j = 1; j <= N; j++) {
+      const x = room.x + (room.w * i) / (N + 1);
+      const z = room.z + (room.d * j) / (N + 1);
+      p.set(x, PROBE_Y, z);
+      const hit = bvh.closestPointToPoint(p, target, 0, MAX_USEFUL);
+      const clearance = hit ? hit.distance : MAX_USEFUL;
+      if (clearance > best.clearance) best = { x, z, clearance };
+    }
+  }
+  return best;
+}
+
+// Which way should we be facing from here? Spawning nose-to-the-wall is
+// disorienting in any walkthrough, but with click-to-move it's a dead end:
+// no floor in view means nothing to click. Sweep headings and take the one
+// with the longest clear line of sight, i.e. looking *into* the room.
+function bestHeading(x, z, bvh) {
+  const RAYS = 16, STEP = 0.5, MAX_REACH = 8, EYE_Y = 1.4, CLEARANCE = 0.45;
+  const target = {}, p = new THREE.Vector3();
+  let bestYaw = 0, bestReach = -1;
+  for (let i = 0; i < RAYS; i++) {
+    const yaw = (i / RAYS) * Math.PI * 2;
+    // camera forward at yaw is (-sin yaw, -cos yaw)
+    const dx = -Math.sin(yaw), dz = -Math.cos(yaw);
+    let reach = 0;
+    for (let s = STEP; s <= MAX_REACH; s += STEP) {
+      p.set(x + dx * s, EYE_Y, z + dz * s);
+      if (bvh.closestPointToPoint(p, target, 0, CLEARANCE)) break;
+      reach = s;
+    }
+    if (reach > bestReach) { bestReach = reach; bestYaw = yaw; }
+  }
+  return bestYaw;
 }
 
 // ------------------------------------------------------------- collision
 
-function canStand(x, z, fp) {
-  const M = 0.32;
-  for (const r of fp.rooms) {
-    if (x > r.x + M && x < r.x + r.w - M && z > r.z + M && z < r.z + r.d - M) return true;
-  }
-  for (const d of fp.doors) {
-    const hw = d.width / 2 - 0.18;
-    if (d.dir === 'v') {
-      if (Math.abs(x - d.x) < 0.6 && z > d.z - hw && z < d.z + hw) return true;
-    } else {
-      if (Math.abs(z - d.z) < 0.6 && x > d.x - hw && x < d.x + hw) return true;
+// Resolves horizontal movement against the wall/jamb BVH (see collisionBVH
+// in buildScene) by sampling two heights — near-floor and near-torso — and
+// pushing the player out of anything the sample sphere penetrates. This
+// replaces the old per-room bounding-box canStand(): it queries the actual
+// wall/jamb solids rather than assuming every room is a clean rectangle,
+// so it stays correct if a future floorplan ever has non-axis-aligned or
+// non-rectangular walls, not just the ones this generator currently makes.
+const PLAYER_RADIUS = 0.3;
+const _cpPoint = new THREE.Vector3();
+const _cpTarget = {};
+function resolveCollision(bvh, x, z, eyeHeight) {
+  let px = x, pz = z;
+  for (let iter = 0; iter < 3; iter++) {
+    for (const y of [0.4, Math.min(eyeHeight, 1.5)]) {
+      _cpPoint.set(px, y, pz);
+      const hit = bvh.closestPointToPoint(_cpPoint, _cpTarget, 0, PLAYER_RADIUS);
+      if (!hit) continue;
+      const dx = px - hit.point.x, dz = pz - hit.point.z;
+      const horizDist = Math.hypot(dx, dz);
+      if (horizDist < PLAYER_RADIUS && horizDist > 1e-5) {
+        const push = PLAYER_RADIUS - horizDist;
+        px += (dx / horizDist) * push;
+        pz += (dz / horizDist) * push;
+      }
     }
   }
-  return false;
+  return { x: px, z: pz };
+}
+
+// Independent reachability check — floods the room-adjacency graph implied
+// by fp.doors (which room each door actually connects, sampled directly
+// from room bounds either side of it) rather than trusting the generator's
+// own construction guarantee. Never blocks opening the tour, just warns —
+// a broken layout should still be explorable, not fail outright.
+function validateReachability(fp) {
+  const rooms = fp.rooms;
+  if (!rooms.length) return;
+  const roomAt = (x, z) => rooms.findIndex(r =>
+    x > r.x - 0.05 && x < r.x + r.w + 0.05 && z > r.z - 0.05 && z < r.z + r.d + 0.05);
+  const adj = rooms.map(() => new Set());
+  for (const d of fp.doors) {
+    const [n1, n2] = d.dir === 'v'
+      ? [{ x: d.x - 0.3, z: d.z }, { x: d.x + 0.3, z: d.z }]
+      : [{ x: d.x, z: d.z - 0.3 }, { x: d.x, z: d.z + 0.3 }];
+    const a = roomAt(n1.x, n1.z), b = roomAt(n2.x, n2.z);
+    if (a >= 0 && b >= 0 && a !== b) { adj[a].add(b); adj[b].add(a); }
+  }
+  const seen = new Set([0]), queue = [0];
+  while (queue.length) {
+    const cur = queue.pop();
+    for (const next of adj[cur]) if (!seen.has(next)) { seen.add(next); queue.push(next); }
+  }
+  const unreachable = rooms.filter((_, i) => !seen.has(i)).map(r => r.name);
+  if (unreachable.length) console.warn('[tour] unreachable from spawn:', unreachable);
+}
+
+// ------------------------------------------------------ click-to-walk nav
+// Google-Maps/Street-View-style navigation: the mouse picks a spot on the
+// floor and the camera walks there. The route is planned through the
+// room-adjacency graph implied by fp.doors rather than making a beeline —
+// a straight line to a point in the next room would grind along the wall
+// between them and can wedge in a corner and never arrive, whereas routing
+// through the doorway is both reachable and what a person would actually do.
+
+const LOOK_YAW_SPEED = 1.7;    // rad/s when holding A/D or left/right
+const LOOK_PITCH_SPEED = 1.25; // rad/s when holding W/S or up/down
+
+const WALK_SPEED = 2.0;      // m/s along the planned path
+const NAV_MIN_DUR = 0.45;    // even a tiny step eases rather than snapping
+const NAV_MAX_DUR = 3.0;     // cap so crossing a huge stage isn't a slog
+const DOOR_APPROACH = 0.55;  // aim this far either side of an opening
+
+function roomIndexAt(fp, x, z) {
+  return fp.rooms.findIndex(r =>
+    x >= r.x && x <= r.x + r.w && z >= r.z && z <= r.z + r.d);
+}
+
+// roomIdx -> Map(neighborIdx -> [entry, middle, exit] waypoints oriented
+// for travel *from* that room, so a path aims squarely through the opening
+// instead of clipping the jamb on a diagonal approach.
+function buildRoomGraph(fp) {
+  const adj = fp.rooms.map(() => new Map());
+  for (const d of fp.doors) {
+    const near = d.dir === 'v'
+      ? { x: d.x - DOOR_APPROACH, z: d.z }
+      : { x: d.x, z: d.z - DOOR_APPROACH };
+    const far = d.dir === 'v'
+      ? { x: d.x + DOOR_APPROACH, z: d.z }
+      : { x: d.x, z: d.z + DOOR_APPROACH };
+    const mid = { x: d.x, z: d.z };
+    const a = roomIndexAt(fp, near.x, near.z);
+    const b = roomIndexAt(fp, far.x, far.z);
+    if (a >= 0 && b >= 0 && a !== b) {
+      adj[a].set(b, [near, mid, far]);
+      adj[b].set(a, [far, mid, near]);
+    }
+  }
+  return adj;
+}
+
+// Breadth-first over rooms; returns the waypoint list (excluding the current
+// position) or null when the target isn't on the floor plan / unreachable.
+function findWalkPath(fp, adj, from, to) {
+  const endRoom = roomIndexAt(fp, to.x, to.z);
+  if (endRoom < 0) return null;
+  const startRoom = roomIndexAt(fp, from.x, from.z);
+  if (startRoom < 0 || startRoom === endRoom) return [{ x: to.x, z: to.z }];
+
+  const prev = new Map([[startRoom, -1]]);
+  const queue = [startRoom];
+  while (queue.length) {
+    const cur = queue.shift();
+    if (cur === endRoom) break;
+    for (const nb of adj[cur].keys()) {
+      if (!prev.has(nb)) { prev.set(nb, cur); queue.push(nb); }
+    }
+  }
+  if (!prev.has(endRoom)) return null;
+
+  const chain = [];
+  for (let r = endRoom; r !== -1; r = prev.get(r)) chain.unshift(r);
+  const pts = [];
+  for (let i = 0; i < chain.length - 1; i++) {
+    const gate = adj[chain[i]].get(chain[i + 1]);
+    if (gate) pts.push(...gate);
+  }
+  pts.push({ x: to.x, z: to.z });
+  return pts;
+}
+
+// Begins a glide to (tx, tz). Returns false when there's nowhere to go, so
+// the caller can leave the click as a no-op rather than starting a null move.
+function startNav(tx, tz) {
+  const pts = findWalkPath(ctx.fp, ctx.roomGraph, { x: ctx.x, z: ctx.z }, { x: tx, z: tz });
+  if (!pts || !pts.length) return false;
+
+  const full = [{ x: ctx.x, z: ctx.z }, ...pts];
+  const cum = [0];
+  for (let i = 1; i < full.length; i++) {
+    cum.push(cum[i - 1] + Math.hypot(full[i].x - full[i - 1].x, full[i].z - full[i - 1].z));
+  }
+  const total = cum[cum.length - 1];
+  if (total < 0.05) return false;
+
+  ctx.nav = {
+    pts: full, cum, total, elapsed: 0, traveled: 0,
+    duration: Math.min(NAV_MAX_DUR, Math.max(NAV_MIN_DUR, total / WALK_SPEED)),
+  };
+  return true;
+}
+
+// Position at arc-length s along the planned polyline.
+function pointAtArc(nav, s) {
+  const { pts, cum } = nav;
+  if (s <= 0) return { x: pts[0].x, z: pts[0].z };
+  for (let i = 1; i < cum.length; i++) {
+    if (s <= cum[i]) {
+      const segLen = cum[i] - cum[i - 1] || 1;
+      const f = (s - cum[i - 1]) / segLen;
+      return {
+        x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * f,
+        z: pts[i - 1].z + (pts[i].z - pts[i - 1].z) * f,
+      };
+    }
+  }
+  const last = pts[pts.length - 1];
+  return { x: last.x, z: last.z };
+}
+
+// The floor target marker — a flat ring that follows the cursor across the
+// floor, the way Street View shows where a click will take you. depthWrite
+// is off (it never occludes scene geometry) but depth *testing* stays on so
+// walls correctly hide targets in rooms you can't see into.
+function makeReticle() {
+  const g = new THREE.Group();
+  const mk = (geo) => new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    color: '#e8b45a', transparent: true, opacity: 0.9, depthWrite: false,
+  }));
+  const ring = mk(new THREE.RingGeometry(0.3, 0.4, 36));
+  const dot = mk(new THREE.CircleGeometry(0.075, 20));
+  ring.rotation.x = dot.rotation.x = -Math.PI / 2;
+  dot.position.y = 0.001;
+  g.add(ring, dot);
+  g.position.y = 0.03;      // clear of the floor plane, avoids z-fighting
+  g.visible = false;
+  g.renderOrder = 2;
+  g.setColor = (hex) => {
+    if (g.userData.color === hex) return;   // material writes aren't free per frame
+    g.userData.color = hex;
+    ring.material.color.set(hex);
+    dot.material.color.set(hex);
+  };
+  return g;
 }
 
 // --------------------------------------------------------------- controls
 
+// Mouse-only navigation, matching Google Maps / Street View: drag to look,
+// click the floor to walk there, wheel to zoom the lens. Deliberately no
+// pointer lock and no WASD — pointer lock hides the cursor, which is exactly
+// what a click-to-move interface needs to show. Dollhouse/floor-plan modes
+// keep their drag-to-orbit behavior.
 function setupControls(dom) {
   const st = {
     keys: new Set(),
     dragging: false, lastX: 0, lastY: 0,
     pinchDist: 0,
   };
+  const LOOK_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
   st.onKeyDown = (e) => {
+    // Stop the arrows scrolling the page behind the tour overlay. Must run
+    // before the repeat guard, since autorepeat fires its own events.
+    if (LOOK_KEYS.has(e.code)) e.preventDefault();
     if (e.repeat) return;
     st.keys.add(e.code);
     if (e.code === 'Escape') { if (ctx && ctx.measure.on) toggleMeasure(); else closeTour(); return; }
     if (!ctx) return;
     if (ctx.mode === 'fly') { setMode('walk'); return; }
     if (e.code === 'KeyM' && ctx.mode === 'walk') toggleMeasure();
+    if (e.code === 'KeyB') ctx.composer.bloomPass.enabled = !ctx.composer.bloomPass.enabled;
+    if (e.code === 'KeyF') ctx.composer.fxaaPass.enabled = !ctx.composer.fxaaPass.enabled;
+    if (e.code === 'KeyQ') applyQuality(QUALITY_TIERS[(QUALITY_TIERS.indexOf(ctx.quality) + 1) % QUALITY_TIERS.length]);
+    if (e.code === 'KeyP') {
+      ctx.showFPS = !ctx.showFPS;
+      document.getElementById('tour-fps').classList.toggle('hidden', !ctx.showFPS);
+    }
   };
   st.onKeyUp = (e) => st.keys.delete(e.code);
+
   st.onPointerDown = (e) => {
     if (ctx && ctx.mode === 'fly') { setMode('walk'); return; }
     st.dragging = true; st.lastX = st.downX = e.clientX; st.lastY = st.downY = e.clientY; st.moved = 0;
+    dom.style.cursor = 'grabbing';
     try { dom.setPointerCapture(e.pointerId); } catch { /* synthetic events */ }
   };
   st.onPointerUp = (e) => {
+    const wasDragging = st.dragging;
     st.dragging = false;
-    if (ctx && ctx.measure.on && ctx.mode === 'walk' && st.moved < 6) measureAt(e.clientX, e.clientY, dom);
+    if (!ctx) return;
+    ctx.pointer = { x: e.clientX, y: e.clientY };
+    // A click is a press that didn't turn into a drag. In walk mode that
+    // means "walk here"; while measuring it drops a measurement point.
+    if (wasDragging && st.moved < 6 && ctx.mode === 'walk') {
+      if (ctx.measure.on) measureAt(e.clientX, e.clientY, dom);
+      else {
+        const hit = pickSurface(e.clientX, e.clientY, dom);
+        if (hitIsStandable(hit)) startNav(hit.point.x, hit.point.z);
+      }
+    }
   };
   st.onPointerMove = (e) => {
-    if (!st.dragging || !ctx) return;
-    const dx = e.clientX - st.lastX, dy = e.clientY - st.lastY;
-    st.lastX = e.clientX; st.lastY = e.clientY;
-    st.moved += Math.abs(dx) + Math.abs(dy);
-    if (ctx.mode === 'walk') {
-      ctx.yaw -= dx * 0.0032;
-      ctx.pitch = Math.max(-1.35, Math.min(1.35, ctx.pitch - dy * 0.0032));
-    } else {
-      ctx.orbitTheta -= dx * 0.005;
-      ctx.orbitPhi = Math.max(0.12, Math.min(1.45, ctx.orbitPhi - dy * 0.004));
+    if (!ctx) return;
+    if (st.dragging) {
+      const dx = e.clientX - st.lastX, dy = e.clientY - st.lastY;
+      st.lastX = e.clientX; st.lastY = e.clientY;
+      st.moved += Math.abs(dx) + Math.abs(dy);
+      if (ctx.mode === 'walk') {
+        ctx.yaw -= dx * 0.0032;
+        ctx.pitch = Math.max(-1.35, Math.min(1.35, ctx.pitch - dy * 0.0032));
+        // Looking around by hand overrides the walk's automatic turn-to-face
+        // for the rest of this move, so the camera never fights the user.
+        if (ctx.nav) ctx.nav.freeLook = true;
+      } else {
+        ctx.orbitTheta -= dx * 0.005;
+        ctx.orbitPhi = Math.max(0.12, Math.min(1.45, ctx.orbitPhi - dy * 0.004));
+      }
+      return;
     }
+    // Just record where the cursor is; the render loop does the picking so
+    // the raycast runs at most once a frame instead of once an event.
+    ctx.pointer = { x: e.clientX, y: e.clientY };
+  };
+  st.onPointerLeave = () => {
+    if (ctx) { ctx.pointer = null; ctx.hover = null; }
   };
   st.onWheel = (e) => {
     e.preventDefault();
@@ -675,6 +1207,7 @@ function setupControls(dom) {
   dom.addEventListener('pointerdown', st.onPointerDown);
   dom.addEventListener('pointerup', st.onPointerUp);
   dom.addEventListener('pointermove', st.onPointerMove);
+  dom.addEventListener('pointerleave', st.onPointerLeave);
   dom.addEventListener('wheel', st.onWheel, { passive: false });
   return st;
 }
@@ -685,6 +1218,7 @@ function teardownControls(st, dom) {
   dom.removeEventListener('pointerdown', st.onPointerDown);
   dom.removeEventListener('pointerup', st.onPointerUp);
   dom.removeEventListener('pointermove', st.onPointerMove);
+  dom.removeEventListener('pointerleave', st.onPointerLeave);
   dom.removeEventListener('wheel', st.onWheel);
 }
 
@@ -734,6 +1268,64 @@ function drawMinimap(canvas, fp, bounds, x, z, yaw) {
   g.restore();
 }
 
+// ------------------------------------------------------------ quality tiers
+// Low/Medium/High scales exactly the things that actually cost frame time:
+// shadow resolution, post-processing, and device-pixel-ratio cap. Cycled
+// with Q in walk mode. Defaults to High — this app has no way to detect
+// the user's actual hardware, so it starts optimistic and lets them back
+// off rather than guessing low and looking worse than necessary.
+const QUALITY_TIERS = ['low', 'medium', 'high'];
+const QUALITY = {
+  low: { shadowMapSize: 512, bloom: false, fxaa: false, pixelRatioCap: 1 },
+  medium: { shadowMapSize: 1024, bloom: true, fxaa: true, pixelRatioCap: 1.5 },
+  high: { shadowMapSize: 2048, bloom: true, fxaa: true, pixelRatioCap: 2 },
+};
+
+function applyQuality(tier) {
+  const q = QUALITY[tier];
+  ctx.quality = tier;
+  ctx.renderer.setPixelRatio(Math.min(window.devicePixelRatio, q.pixelRatioCap));
+  ctx.composer.setSize(ctx.renderer.domElement.clientWidth || 1, ctx.renderer.domElement.clientHeight || 1);
+  ctx.composer.bloomPass.enabled = q.bloom;
+  ctx.composer.fxaaPass.enabled = q.fxaa;
+  if (ctx.sun.shadow.mapSize.width !== q.shadowMapSize) {
+    ctx.sun.shadow.mapSize.set(q.shadowMapSize, q.shadowMapSize);
+    if (ctx.sun.shadow.map) { ctx.sun.shadow.map.dispose(); ctx.sun.shadow.map = null; }
+  }
+}
+
+// ------------------------------------------------------------ post-processing
+// A light stack rather than the full SSAO/GTAO the spec describes — SSAO's
+// jsm implementation pulls in a much larger shader/texture dependency
+// chain, and this build can't fetch anything beyond what's vendored
+// locally. Bloom (mild, so it reads as light bleeding off windows/fixtures,
+// not a glow filter) + FXAA + a correct tone-mapped output pass covers most
+// of the visible gap. Each pass is independently toggleable via .enabled —
+// press B / F in walk mode to see the difference.
+function buildComposer(renderer, scene, camera, wrap) {
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+
+  // threshold raised well above typical wall/floor brightness so bloom
+  // only catches genuinely bright things (windows, fixtures), not every
+  // lit surface in the room — at 0.86 it was blooming normal walls,
+  // producing the washed-out/glowing look.
+  const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.18, 0.45, 1.15);
+  composer.addPass(bloom);
+
+  const fxaa = new ShaderPass(FXAAShader);
+  const pr = renderer.getPixelRatio();
+  fxaa.material.uniforms['resolution'].value.set(1 / (w * pr), 1 / (h * pr));
+  composer.addPass(fxaa);
+
+  composer.addPass(new OutputPass());
+
+  composer.bloomPass = bloom;
+  composer.fxaaPass = fxaa;
+  return composer;
+}
+
 // ------------------------------------------------------------ public API
 
 export function openTour(listing, opts = {}) {
@@ -751,38 +1343,56 @@ export function openTour(listing, opts = {}) {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.3;
+  renderer.toneMappingExposure = TOUR_EXPOSURE;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
   wrap.appendChild(renderer.domElement);
 
-  const { scene, ceilings, bounds } = buildScene(listing);
+  const fp = resolveFloorplan(listing);
+  validateReachability(fp);
+  const { scene, ceilings, bounds, collisionBVH, sun } = buildScene(listing, fp);
+
+  // Procedural PMREM environment (see the RoomEnvironment import note
+  // above) — gives every MeshStandardMaterial/RectAreaLight in the scene
+  // plausible reflections instead of looking flat with no envMap at all.
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
   const camera = new THREE.PerspectiveCamera(70, wrap.clientWidth / wrap.clientHeight, 0.05, 300);
   camera.rotation.order = 'YXZ';
 
-  const spawnRoom = listing.floorplan.rooms[0];
+  const composer = buildComposer(renderer, scene, camera, wrap);
+
+  const spawn = findClearPoint(fp.rooms[0], collisionBVH);
   const controls = setupControls(renderer.domElement);
 
   ctx = {
-    listing, renderer, scene, camera, ceilings, bounds, controls,
+    listing, fp, renderer, scene, camera, ceilings, bounds, controls, pmrem, composer, collisionBVH, sun,
+    quality: 'high', showFPS: false, fpsAccum: 0, fpsFrames: 0, fpsLastUpdate: performance.now(),
     mode: 'walk',
-    x: spawnRoom.x + spawnRoom.w / 2, z: spawnRoom.z + spawnRoom.d / 2,
-    yaw: Math.PI * 0.75, pitch: 0, fov: 70,
-    vel: { x: 0, z: 0 }, crouch: false,
+    x: spawn.x, z: spawn.z,
+    yaw: bestHeading(spawn.x, spawn.z, collisionBVH), pitch: -0.12, fov: 70, eye: EYE,
+    lookVel: { yaw: 0, pitch: 0 },
+    roomGraph: buildRoomGraph(fp), nav: null, hover: null, pointer: null, reticle: makeReticle(),
     orbitTheta: -0.7, orbitPhi: 0.9, orbitR: Math.max(bounds.w, bounds.d) * 1.25,
-    fly: null, flyPath: buildFlyPath(listing, bounds),
+    fly: null, flyPath: buildFlyPath(fp, bounds),
     measure: { on: false, pts: [], group: new THREE.Group(), ray: new THREE.Raycaster() },
     raf: 0, lastT: performance.now(),
   };
   scene.add(ctx.measure.group);
+  scene.add(ctx.reticle);
+  applyQuality(ctx.quality);
 
-  // room jump chips
+  // Room chips walk you there rather than teleporting, so you keep your
+  // bearings — same routing (and doorways) as clicking the floor.
   const roomsBar = document.getElementById('tour-rooms');
   roomsBar.innerHTML = '';
-  for (const r of listing.floorplan.rooms) {
+  for (const r of fp.rooms) {
     const btn = document.createElement('button');
     btn.textContent = r.name;
     btn.onclick = () => {
       setMode('walk');
-      ctx.x = r.x + r.w / 2; ctx.z = r.z + r.d / 2;
+      const dest = findClearPoint(r, collisionBVH);   // not the centre — that's where the couch is
+      startNav(dest.x, dest.z);
     };
     roomsBar.appendChild(btn);
   }
@@ -794,8 +1404,12 @@ export function openTour(listing, opts = {}) {
 
   ctx.onResize = () => {
     if (!ctx) return;
-    renderer.setSize(wrap.clientWidth, wrap.clientHeight);
-    camera.aspect = wrap.clientWidth / wrap.clientHeight;
+    const w = wrap.clientWidth, h = wrap.clientHeight;
+    renderer.setSize(w, h);
+    composer.setSize(w, h);
+    const pr = renderer.getPixelRatio();
+    composer.fxaaPass.material.uniforms['resolution'].value.set(1 / (w * pr), 1 / (h * pr));
+    camera.aspect = w / h;
     camera.updateProjectionMatrix();
   };
   window.addEventListener('resize', ctx.onResize);
@@ -807,8 +1421,8 @@ export function openTour(listing, opts = {}) {
 // ------------------------------------------------------- cinematic flythrough
 // A keyframed camera path: a high exterior orbit that dives to the entrance,
 // then glides through the room centers at eye level. Catmull-Rom smoothed.
-function buildFlyPath(listing, b) {
-  const rooms = listing.floorplan.rooms;
+function buildFlyPath(fp, b) {
+  const rooms = fp.rooms;
   const pts = [], looks = [];
   const R = Math.max(b.w, b.d);
   // opening exterior sweep
@@ -879,18 +1493,74 @@ function addMeasurePoint(worldPt) {
   }
 }
 function walkHelp() {
-  return 'Drag to look · WASD to move · Shift run · C crouch · M measure · Esc exit';
+  return 'Click the floor to walk there · Drag or WASD / arrows to look around · Scroll to zoom lens · Esc to exit';
 }
 
-const GROUND_PLANE = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-function measureAt(clientX, clientY, dom) {
+// Picks the nearest real surface under the cursor. Previously this
+// intersected an infinite y=0 plane, which meant the ray sailed straight
+// through walls: you could measure a point in the next room, or target a
+// room you couldn't see. Raycasting the actual scene stops at the first
+// solid, and — because the hit is a true 3D point — also makes vertical
+// measurement (ceiling height, window height) possible at all.
+const _ndc = new THREE.Vector2();
+const _hitNormal = new THREE.Vector3();
+
+function pickSurface(clientX, clientY, dom) {
   const rect = dom.getBoundingClientRect();
-  const ndc = new THREE.Vector2(
+  _ndc.set(
     ((clientX - rect.left) / rect.width) * 2 - 1,
     -((clientY - rect.top) / rect.height) * 2 + 1);
-  ctx.measure.ray.setFromCamera(ndc, ctx.camera);
-  const hit = new THREE.Vector3();
-  if (ctx.measure.ray.ray.intersectPlane(GROUND_PLANE, hit)) addMeasurePoint(hit);
+  const ray = ctx.measure.ray;
+  ray.setFromCamera(_ndc, ctx.camera);
+  for (const hit of ray.intersectObject(ctx.scene, true)) {
+    const o = hit.object;
+    if (o.isSprite || !o.isMesh) continue;          // labels aren't surfaces
+    let node = o, skip = false;
+    while (node) {
+      // the cursor's own marker and existing measurement pins aren't scenery
+      if (node === ctx.reticle || node === ctx.measure.group || node.visible === false) { skip = true; break; }
+      node = node.parent;
+    }
+    if (skip) continue;
+    return hit;
+  }
+  return null;
+}
+
+// Is this hit a bit of floor you could actually stand on (rather than a
+// wall, a worktop, or the roof of something)?
+function hitIsStandable(hit) {
+  if (!hit || hit.point.y > 0.3) return false;
+  if (hit.face) {
+    _hitNormal.copy(hit.face.normal).transformDirection(hit.object.matrixWorld);
+    if (_hitNormal.y < 0.5) return false;
+  }
+  return roomIndexAt(ctx.fp, hit.point.x, hit.point.z) >= 0;
+}
+
+// Resolve what's under the cursor. Runs once per frame from the render loop
+// off the last pointer position rather than on every pointermove event,
+// which naturally throttles the raycast to the frame rate.
+function updateHover() {
+  const dom = ctx.renderer.domElement;
+  if (ctx.mode !== 'walk' || ctx.measure.on || !ctx.pointer || ctx.controls.dragging) {
+    ctx.hover = null;
+    if (ctx.mode !== 'walk') dom.style.cursor = 'move';
+    else if (ctx.measure.on) dom.style.cursor = 'crosshair';
+    else if (ctx.controls.dragging) dom.style.cursor = 'grabbing';
+    return;
+  }
+  const hit = pickSurface(ctx.pointer.x, ctx.pointer.y, dom);
+  if (!hitIsStandable(hit)) { ctx.hover = null; dom.style.cursor = 'grab'; return; }
+  // Reachable? A spot behind a locked-off wall shouldn't look clickable.
+  const path = findWalkPath(ctx.fp, ctx.roomGraph, { x: ctx.x, z: ctx.z }, { x: hit.point.x, z: hit.point.z });
+  ctx.hover = { x: hit.point.x, z: hit.point.z, blocked: !path };
+  dom.style.cursor = path ? 'pointer' : 'not-allowed';
+}
+
+function measureAt(clientX, clientY, dom) {
+  const hit = pickSurface(clientX, clientY, dom);
+  if (hit) addMeasurePoint(hit.point.clone());
 }
 
 function setMode(mode) {
@@ -898,6 +1568,8 @@ function setMode(mode) {
   ctx.mode = mode;
   ctx.ceilings.visible = (mode === 'walk' || mode === 'fly');
   if (mode !== 'walk' && ctx.measure.on) toggleMeasure();
+  if (mode !== 'walk') { ctx.nav = null; ctx.hover = null; ctx.reticle.visible = false; }
+  ctx.renderer.domElement.style.cursor = mode === 'walk' ? 'grab' : 'move';
   document.querySelectorAll('#tour-modes button').forEach(b =>
     b.classList.toggle('active', b.dataset.mode === mode));
   document.getElementById('tour-minimap').style.display = mode === 'walk' ? 'block' : 'none';
@@ -921,49 +1593,110 @@ function loop() {
   if (!ctx) return;
   ctx.raf = requestAnimationFrame(loop);
   const now = performance.now();
-  const dt = Math.min(0.05, (now - ctx.lastT) / 1000);
+  const realDt = now - ctx.lastT; // unclamped, for the FPS readout below
+  const dt = Math.min(0.05, realDt / 1000);
   ctx.lastT = now;
+
+  if (ctx.showFPS) {
+    ctx.fpsAccum += realDt; ctx.fpsFrames++;
+    if (now - ctx.fpsLastUpdate > 500) {
+      const fps = Math.round(1000 / (ctx.fpsAccum / ctx.fpsFrames));
+      document.getElementById('tour-fps').textContent = `${fps} fps · ${ctx.quality} quality`;
+      ctx.fpsAccum = 0; ctx.fpsFrames = 0; ctx.fpsLastUpdate = now;
+    }
+  }
 
   const { camera, controls } = ctx;
 
   if (ctx.mode === 'fly') {
     updateFly(dt);
-    ctx.renderer.render(ctx.scene, camera);
+    ctx.composer.render();
     return;
   }
 
   if (ctx.mode === 'walk') {
+    // Keyboard look — WASD and the arrows pivot the camera in place (W/S
+    // up-down, A/D left-right); they deliberately don't translate, since
+    // moving is the mouse's job. Rate is eased in and out so holding a key
+    // starts and stops as a glide rather than a snap.
     const k = controls.keys;
-    ctx.crouch = k.has('KeyC') || k.has('ControlLeft');
-    const run = (k.has('ShiftLeft') || k.has('ShiftRight')) && !ctx.crouch ? 2 : ctx.crouch ? 0.55 : 1;
-    let mx = 0, mz = 0;
-    if (k.has('KeyW') || k.has('ArrowUp')) mz -= 1;
-    if (k.has('KeyS') || k.has('ArrowDown')) mz += 1;
-    if (k.has('KeyA') || k.has('ArrowLeft')) mx -= 1;
-    if (k.has('KeyD') || k.has('ArrowRight')) mx += 1;
-    if (k.has('KeyQ')) ctx.yaw += 1.8 * dt;
-    if (k.has('KeyE')) ctx.yaw -= 1.8 * dt;
-    // desired velocity in world space, smoothed for gentle accel/decel
-    let tvx = 0, tvz = 0;
-    if (mx || mz) {
-      const len = Math.hypot(mx, mz); mx /= len; mz /= len;
-      const sin = Math.sin(ctx.yaw), cos = Math.cos(ctx.yaw);
-      const sp = 3.2 * run;
-      tvx = (mx * cos - mz * sin) * sp;
-      tvz = (mx * sin + mz * cos) * sp;
-    }
-    const smooth = 1 - Math.pow(0.0025, dt); // frame-rate independent lerp
-    ctx.vel.x += (tvx - ctx.vel.x) * smooth;
-    ctx.vel.z += (tvz - ctx.vel.z) * smooth;
-    const fp = ctx.listing.floorplan;
-    const wx = ctx.vel.x * dt, wz = ctx.vel.z * dt;
-    if (canStand(ctx.x + wx, ctx.z, fp)) ctx.x += wx; else ctx.vel.x = 0;
-    if (canStand(ctx.x, ctx.z + wz, fp)) ctx.z += wz; else ctx.vel.z = 0;
+    let wantYaw = 0, wantPitch = 0;
+    if (k.has('KeyA') || k.has('ArrowLeft')) wantYaw += 1;   // +yaw looks left
+    if (k.has('KeyD') || k.has('ArrowRight')) wantYaw -= 1;
+    if (k.has('KeyW') || k.has('ArrowUp')) wantPitch += 1;   // +pitch looks up
+    if (k.has('KeyS') || k.has('ArrowDown')) wantPitch -= 1;
 
-    const eye = ctx.crouch ? CROUCH_EYE : EYE;
-    ctx.eye = (ctx.eye ?? EYE) + (eye - (ctx.eye ?? EYE)) * Math.min(1, dt * 10);
-    camera.position.set(ctx.x, ctx.eye, ctx.z);
+    const lookSmooth = 1 - Math.pow(0.0001, dt); // frame-rate independent
+    const lv = ctx.lookVel;
+    lv.yaw += (wantYaw * LOOK_YAW_SPEED - lv.yaw) * lookSmooth;
+    lv.pitch += (wantPitch * LOOK_PITCH_SPEED - lv.pitch) * lookSmooth;
+    if (Math.abs(lv.yaw) > 1e-4 || Math.abs(lv.pitch) > 1e-4) {
+      ctx.yaw += lv.yaw * dt;
+      ctx.pitch = Math.max(-1.35, Math.min(1.35, ctx.pitch + lv.pitch * dt));
+      // Same rule as dragging: steering by hand takes the wheel off the
+      // walk's automatic turn-to-face for the rest of the move.
+      if (ctx.nav && (wantYaw || wantPitch)) ctx.nav.freeLook = true;
+    }
+
+    // Follow the planned path. Progress is eased over the whole route
+    // (smootherstep, so both velocity and acceleration start and end at
+    // zero) — that's what makes arrivals settle instead of stopping dead.
+    let speed = 0;
+    if (ctx.nav) {
+      const nav = ctx.nav;
+      nav.elapsed += dt;
+      const u = Math.min(1, nav.elapsed / nav.duration);
+      const eased = u * u * u * (u * (6 * u - 15) + 10);
+      const s = eased * nav.total;
+      speed = dt > 0 ? (s - nav.traveled) / dt : 0;
+      nav.traveled = s;
+
+      const p = pointAtArc(nav, s);
+      const resolved = resolveCollision(ctx.collisionBVH, p.x, p.z, EYE);
+      ctx.x = resolved.x; ctx.z = resolved.z;
+
+      // Turn to face the way we're walking, unless the user grabbed the
+      // view mid-move. Tiny hops don't bother turning at all.
+      if (!nav.freeLook && nav.total > 0.8) {
+        const ahead = pointAtArc(nav, Math.min(nav.total, s + 0.4));
+        const dx = ahead.x - p.x, dz = ahead.z - p.z;
+        if (Math.hypot(dx, dz) > 1e-4) {
+          // Camera forward at yaw is (-sin yaw, -cos yaw) — verified against
+          // camera.getWorldDirection(), not assumed. Solving that for the
+          // travel vector gives yaw = atan2(-dx, -dz).
+          let diff = Math.atan2(-dx, -dz) - ctx.yaw;
+          diff = Math.atan2(Math.sin(diff), Math.cos(diff)); // shortest way round
+          ctx.yaw += diff * (1 - Math.pow(0.02, dt));
+        }
+      }
+      if (u >= 1) ctx.nav = null;
+    }
+    ctx.eye = EYE;
+
+    // Head-bob keyed to distance actually covered, so it reads as footsteps
+    // rather than ticking while stationary. Kept subtle — enough to feel
+    // like walking, not enough to notice as an effect.
+    const speedFrac = Math.min(1, speed / 2.5);
+    ctx.bobPhase = (ctx.bobPhase ?? 0) + speed * dt * 1.8;
+    const bobY = speedFrac > 0.02 ? Math.abs(Math.sin(ctx.bobPhase)) * 0.022 * speedFrac : 0;
+    const bobX = speedFrac > 0.02 ? Math.sin(ctx.bobPhase * 0.5) * 0.014 * speedFrac : 0;
+
+    // Resolve what's under the cursor, then park the floor target there with
+    // a slow pulse so it reads as interactive. Unreachable spots still show a
+    // marker, but in red — silently showing nothing looked like a dead app.
+    updateHover();
+    const ret = ctx.reticle;
+    ret.visible = !!ctx.hover && !ctx.nav;
+    if (ret.visible) {
+      ret.position.set(ctx.hover.x, 0.03, ctx.hover.z);
+      const pulse = 1 + Math.sin(now * 0.004) * 0.07;
+      ret.scale.set(pulse, pulse, pulse);
+      ret.setColor(ctx.hover.blocked ? '#e0603f' : '#e8b45a');
+    }
+
+    camera.position.set(ctx.x, ctx.eye + bobY, ctx.z);
     camera.rotation.set(ctx.pitch, ctx.yaw, 0);
+    camera.translateX(bobX); // lateral sway relative to look direction, not world X
     if (Math.abs(camera.fov - ctx.fov) > 0.1) {
       camera.fov += (ctx.fov - camera.fov) * 0.25;
       camera.updateProjectionMatrix();
@@ -971,7 +1704,7 @@ function loop() {
       document.getElementById('tour-lens').textContent = `~${mm}mm · FOV ${Math.round(camera.fov)}°`;
     }
     drawMinimap(document.getElementById('tour-minimap'),
-      ctx.listing.floorplan, ctx.bounds, ctx.x, ctx.z, ctx.yaw);
+      ctx.fp, ctx.bounds, ctx.x, ctx.z, ctx.yaw);
   } else {
     const { bounds } = ctx;
     const phi = ctx.mode === 'plan' ? 0.14 : ctx.orbitPhi;
@@ -985,7 +1718,7 @@ function loop() {
     if (camera.fov !== 55) { camera.fov = 55; camera.updateProjectionMatrix(); }
   }
 
-  ctx.renderer.render(ctx.scene, camera);
+  ctx.composer.render();
 }
 
 export function closeTour() {
@@ -1000,6 +1733,10 @@ export function closeTour() {
       m.dispose();
     });
   });
+  ctx.pmrem.dispose();
+  ctx.collisionBVH.geometry.disposeBoundsTree();
+  ctx.collisionBVH.geometry.dispose();
+  ctx.composer.dispose();
   ctx.renderer.dispose();
   ctx.renderer.domElement.remove();
   ctx = null;
