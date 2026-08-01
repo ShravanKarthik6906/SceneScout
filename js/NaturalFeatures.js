@@ -91,6 +91,24 @@ async function queryOverpass(query) {
 
 // feature: { label, icon, osmTags: [{key,value}], elementTypes: string[], approxSizeFt: number|null }
 // center: {lat,lng}. radiusMi: search radius.
+// OSM will happily return thousands of matching polygons for a broad tag
+// over a wide radius, and dumping all of them on the map is unusable (and
+// slow — every one becomes a Leaflet marker). A scout wants the notable
+// features, which in OSM terms means the named ones first, then the biggest.
+const MAX_FEATURE_RESULTS = 60;
+function rankFeatures(results, feature) {
+    const named = (r) => !r.name.toLowerCase().startsWith('unnamed');
+    const size = (r) => r.sqft || 0;   // set from the feature's area in toFeatureLocation
+    const sorted = [...results].sort((a, b) => {
+        if (named(a) !== named(b)) return named(a) ? -1 : 1;   // named beats unnamed
+        return size(b) - size(a);                              // then largest first
+    });
+    if (sorted.length > MAX_FEATURE_RESULTS) {
+        console.info(`[naturalFeatures] ${sorted.length} ${feature.label} matches, showing top ${MAX_FEATURE_RESULTS}`);
+    }
+    return sorted.slice(0, MAX_FEATURE_RESULTS);
+}
+
 export async function findNaturalFeatures(center, radiusMi, feature) {
     if (!feature || !Array.isArray(feature.osmTags) || !feature.osmTags.length) return [];
 
@@ -132,7 +150,7 @@ export async function findNaturalFeatures(center, radiusMi, feature) {
         results.push(toFeatureLocation(el, feature, name, lat, lng, diameterFt));
     }
 
-    if (results.length) return results;
+    if (results.length) return rankFeatures(results, feature);
 
     // Overpass found nothing even after relaxing the tag set — most likely
     // a genuine coverage gap (this exact class of problem is what's caused

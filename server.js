@@ -272,9 +272,20 @@ function hashQuery(q) {
 // whatever a real mirror would have found. overpass.kumi.systems was
 // confirmed live to return real results (606 elements) for the same query
 // that these two came back empty on.
+// Both original mirrors are unreachable from some networks (university and
+// corporate firewalls in particular): DNS resolves but the TCP connection
+// never completes, so every natural-feature search dies with "fetch failed"
+// and the whole feature silently returns nothing. These two additional
+// mirrors were verified to connect *and* return real elements for the same
+// query the originals refused. Mirrors that answer 200 with an empty
+// element list are deliberately NOT listed — Promise.any below takes the
+// first *fulfilled* response, so an empty-but-successful mirror would win
+// the race and mask the good ones (this is why two were dropped before).
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
 ];
 
 // 400 (bad query) and 406 fail identically on every mirror — if every mirror
