@@ -17,7 +17,7 @@ import { parseQuery } from './nlp.js';
 import { parseScript } from './scriptParser.js';
 import { computeSuitability } from './score.js';
 import { sunTimes, sunPosition, fmtTime, fmtTimeAt, tzAbbr, compass, geocode, forecast, weatherText, fetchPlaceInfo, reverseGeocode } from './intel.js';
-import { ensure3D, resize3D, update3D, flyHome3D, flyToListing3D, setGlobeMode, flyToGlobalView, startGlobeSpin, stopGlobeSpin, showStarfield, hideStarfield, applyHoloStyle, removeHoloStyle } from './map3d.js';
+import { ensure3D, resize3D, update3D, flyHome3D, flyToListing3D, setGlobeMode, flyToGlobalView, startGlobeSpin, stopGlobeSpin, showStarfield, hideStarfield } from './map3d.js';
 import { findNaturalFeatures } from './NaturalFeatures.js';
 import { findRealPlaces } from './RealPlaces.js';
 
@@ -783,7 +783,6 @@ async function enterExploreMode() {
   // and starting rotation — setGlobeMode defers until style.load if the
   // style isn't ready yet (fixes "Style is not done loading" error).
   await setGlobeMode(true);
-  applyHoloStyle();
   showStarfield();
   flyToGlobalView();
   startGlobeSpin();
@@ -794,7 +793,6 @@ function exitExploreMode() {
   document.getElementById('explore-toggle')?.classList.remove('active');
   hideStarfield();
   stopGlobeSpin();
-  removeHoloStyle();
   setGlobeMode(false);
   closeDiscoverPanel();
   if (state.view === '3d') flyHome3D(state.center);

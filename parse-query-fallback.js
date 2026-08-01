@@ -23,8 +23,10 @@ function fallbackParseQuery(query) {
     locationText: null,
     naturalFeature: null,
   };
-  // types
-  for (const t of TYPE_SET) if (lower.includes(t)) result.types.push(t);
+  // types — word-boundary match, not plain substring: "warehouse" contains
+  // "house", so a naive .includes() would wrongly tag both types for any
+  // warehouse query.
+  for (const t of TYPE_SET) if (new RegExp(`\\b${t}\\b`).test(lower)) result.types.push(t);
   // style words
   for (const w of STYLE_VOCAB) if (lower.includes(w)) result.styleWords.push(w);
   // light

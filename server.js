@@ -7,6 +7,7 @@ const fs = require('fs');
 const { fallbackParseQuery } = require('./parse-query-fallback');
 const { fallbackGeocode } = require('./geocode-fallback');
 const { fallbackPlacesSearch } = require('./places-fallback');
+const { fallbackNaturalFeatures } = require('./natural-features-fallback');
 
 const app = express();
 app.use(cors());
@@ -649,6 +650,17 @@ app.get('/api/geonames-search', async (req, res) => {
   const key = 'geonames:' + hashQuery(`${label || ''}|${(+lat).toFixed(3)},${(+lng).toFixed(3)},${radiusKm}`);
   if (geonamesCache[key]) return res.json(geonamesCache[key]);
 
+  // 'demo' is the shared public GeoNames account (no registration) — it's
+  // real but so aggressively rate-limited across every app using it that
+  // treating it the same as "no key configured" and going straight to the
+  // offline fallback is more reliable than actually calling it.
+  if (!GEONAMES_USERNAME || GEONAMES_USERNAME === 'demo') {
+    console.log('[fallback] GeoNames username not configured – using offline natural-features list');
+    const results = fallbackNaturalFeatures(+lat, +lng, radiusMi, featureClass);
+    geonamesCache[key] = results;
+    return res.json(results);
+  }
+
   const params = new URLSearchParams({
     lat, lng, radius: String(radiusKm), maxRows: '50', username: GEONAMES_USERNAME,
   });
@@ -677,8 +689,10 @@ app.get('/api/geonames-search', async (req, res) => {
     geonamesCache[key] = results;
     res.json(results);
   } catch (e) {
-    console.error('GeoNames search error:', e.message);
-    res.status(e.status || 500).json({ error: e.message || 'Internal server error' });
+    console.error('GeoNames search error:', e.message, '– falling back to offline natural-features list');
+    const results = fallbackNaturalFeatures(+lat, +lng, radiusMi, featureClass);
+    geonamesCache[key] = results;
+    res.json(results);
   }
 });
 
