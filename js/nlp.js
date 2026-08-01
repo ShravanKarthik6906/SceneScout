@@ -45,16 +45,17 @@ const NUM_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7
 // naturalFeature schema in server.js exactly, so NaturalFeatures.js can
 // consume either source identically.
 const NATURAL_FEATURE_LEXICON = [
-  { words: ['lake', 'pond', 'reservoir'], feature: { label: 'Lake', icon: '🏞️', osmTags: [{ key: 'natural', value: 'water' }], elementTypes: ['way', 'relation'] } },
-  { words: ['river', 'creek', 'stream'], feature: { label: 'River', icon: '🌊', osmTags: [{ key: 'waterway', value: 'river' }], elementTypes: ['way'] } },
-  { words: ['beach', 'shoreline', 'seashore'], feature: { label: 'Beach', icon: '🏖️', osmTags: [{ key: 'natural', value: 'beach' }], elementTypes: ['way', 'node'] } },
-  { words: ['mountain', 'peak', 'summit'], feature: { label: 'Mountain Peak', icon: '⛰️', osmTags: [{ key: 'natural', value: 'peak' }], elementTypes: ['node'] } },
-  { words: ['forest', 'woods', 'woodland'], feature: { label: 'Forest', icon: '🌲', osmTags: [{ key: 'natural', value: 'wood' }], elementTypes: ['way', 'relation'] } },
-  { words: ['waterfall', 'falls'], feature: { label: 'Waterfall', icon: '💧', osmTags: [{ key: 'waterway', value: 'waterfall' }], elementTypes: ['node', 'way'] } },
-  { words: ['cliff', 'bluff'], feature: { label: 'Cliff', icon: '🧗', osmTags: [{ key: 'natural', value: 'cliff' }], elementTypes: ['way', 'node'] } },
-  { words: ['cave'], feature: { label: 'Cave', icon: '🕳️', osmTags: [{ key: 'natural', value: 'cave_entrance' }], elementTypes: ['node'] } },
-  { words: ['park'], feature: { label: 'Park', icon: '🌳', osmTags: [{ key: 'leisure', value: 'park' }], elementTypes: ['way', 'relation'] } },
-  { words: ['island'], feature: { label: 'Island', icon: '🏝️', osmTags: [{ key: 'place', value: 'island' }], elementTypes: ['node', 'way'] } },
+  { words: ['lake', 'lakes', 'pond', 'ponds', 'reservoir'], feature: { label: 'Lake', icon: '🏞️', osmTags: [{ key: 'natural', value: 'water' }], elementTypes: ['way', 'relation'] } },
+  { words: ['river', 'rivers', 'creek', 'stream'], feature: { label: 'River', icon: '🌊', osmTags: [{ key: 'waterway', value: 'river' }], elementTypes: ['way'] } },
+  { words: ['beach', 'beaches', 'shoreline', 'coastline', 'coast', 'seashore', 'ocean', 'sand'], feature: { label: 'Beach', icon: '🏖️', osmTags: [{ key: 'natural', value: 'beach' }, { key: 'natural', value: 'coastline' }, { key: 'leisure', value: 'beach_resort' }], elementTypes: ['way', 'node'] } },
+  { words: ['mountain', 'mountains', 'peak', 'summit'], feature: { label: 'Mountain Peak', icon: '⛰️', osmTags: [{ key: 'natural', value: 'peak' }, { key: 'natural', value: 'ridge' }], elementTypes: ['node', 'way'] } },
+  { words: ['forest', 'forests', 'woods', 'woodland'], feature: { label: 'Forest', icon: '🌲', osmTags: [{ key: 'natural', value: 'wood' }, { key: 'landuse', value: 'forest' }], elementTypes: ['way', 'relation'] } },
+  { words: ['waterfall', 'waterfalls', 'falls'], feature: { label: 'Waterfall', icon: '💧', osmTags: [{ key: 'waterway', value: 'waterfall' }], elementTypes: ['node', 'way'] } },
+  { words: ['cliff', 'cliffs', 'bluff'], feature: { label: 'Cliff', icon: '🧗', osmTags: [{ key: 'natural', value: 'cliff' }], elementTypes: ['way', 'node'] } },
+  { words: ['cave', 'caves'], feature: { label: 'Cave', icon: '🕳️', osmTags: [{ key: 'natural', value: 'cave_entrance' }], elementTypes: ['node'] } },
+  { words: ['park', 'parks'], feature: { label: 'Park', icon: '🌳', osmTags: [{ key: 'leisure', value: 'park' }], elementTypes: ['way', 'relation'] } },
+  { words: ['island', 'islands'], feature: { label: 'Island', icon: '🏝️', osmTags: [{ key: 'place', value: 'island' }], elementTypes: ['node', 'way'] } },
+  { words: ['skyscraper', 'skyscrapers', 'high rise', 'tower'], feature: { label: 'Skyscraper', icon: '🏙️', osmTags: [{ key: 'building', value: 'yes' }], elementTypes: ['way', 'node'] } },
 ];
 
 function matchAny(text, phrases) {

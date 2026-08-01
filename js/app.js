@@ -10,9 +10,11 @@ let LOCATIONS = [];
 import { TYPES, CENTERS, LIGHT_LABELS } from './catalog.js';
 import { initMap, updateMap, flyToListing, fitToRadius, setSelectedMarker, clearSelectedMarker, setSatellite, isSatellite } from './map.js';
 import { drawIsoHero } from './thumbs.js';
+import { createLocationCard } from './locationCard.js';
 import { openTour } from './tour.js';
 import { DEBUG_LOCATIONS } from './floorplanGen.js';
 import { parseQuery } from './nlp.js';
+import { parseScript } from './scriptParser.js';
 import { computeSuitability } from './score.js';
 import { sunTimes, sunPosition, fmtTime, fmtTimeAt, tzAbbr, compass, geocode, forecast, weatherText, fetchPlaceInfo, reverseGeocode } from './intel.js';
 import { ensure3D, resize3D, update3D, flyHome3D, flyToListing3D, setGlobeMode, flyToGlobalView, startGlobeSpin, stopGlobeSpin, showStarfield, hideStarfield } from './map3d.js';
@@ -336,14 +338,25 @@ function setSearching(on) {
 async function runAISearch(text) {
   setSearching(true);
   state.hasSearched = true;
+  showBgProcess('AI is interpreting location requirements...');
   try {
     const q = await parseQuery(text);
     applyParsedToState(q);
     renderInterpreted(q);
 
+    // If searching for beaches or coastal features without a city specified,
+    // default to Miami Beach to ensure real beach locations load on the map
+    const textLower = (text || '').toLowerCase();
+    if (!q.locationText && (textLower.includes('beach') || (q.naturalFeature && q.naturalFeature.label === 'Beach'))) {
+      q.locationText = 'Miami Beach, FL';
+    } else if (!q.locationText && (textLower.includes('mountain') || (q.naturalFeature && q.naturalFeature.label === 'Mountain Peak'))) {
+      q.locationText = 'Denver, CO';
+    }
+
     // If a location is specified, geocode and move the map center
     if (q.locationText) {
       setGeoStatus(`Locating “${q.locationText}”…`);
+      showBgProcess(`Geocoding “${q.locationText}”…`);
       const hit = await geocode(q.locationText);
       if (hit) moveCenter(hit.lat, hit.lng, hit.label);
       else setGeoStatus(`Couldn't find “${q.locationText}” — showing ${state.centerName}.`, true);
@@ -352,6 +365,7 @@ async function runAISearch(text) {
     if (state.view === '3d') flyHome3D(state.center);
   } finally {
     setSearching(false);
+    hideBgProcess();
   }
 }
 
@@ -866,6 +880,246 @@ function playClapAnimation() {
   stick.classList.add('clapping');
 }
 
+// -------------------------------------------------- Background & Script Breakdown
+
+function showBgProcess(text = 'Processing background task...') {
+  const indicator = document.getElementById('bg-process-indicator');
+  const txt = document.getElementById('bg-process-text');
+  if (indicator && txt) {
+    txt.textContent = text;
+    indicator.classList.remove('hidden');
+  }
+}
+
+function hideBgProcess() {
+  const indicator = document.getElementById('bg-process-indicator');
+  if (indicator) indicator.classList.add('hidden');
+}
+
+function setupScriptBreakdown() {
+  const dropZone = document.getElementById('script-drop-zone');
+  const fileInput = document.getElementById('script-upload');
+  const statusEl = document.getElementById('script-status');
+  const resultsWrap = document.getElementById('script-results-wrap');
+  const resultsEl = document.getElementById('script-results');
+  const countEl = document.getElementById('results-count');
+  const enhanceBtn = document.getElementById('enhance-ai');
+
+  if (!dropZone || !fileInput) return;
+
+  dropZone.addEventListener('click', (e) => {
+    if (e.target !== fileInput) {
+      fileInput.click();
+    }
+  });
+
+  // Drag and drop event handlers
+  ['dragenter', 'dragover'].forEach(name => {
+    dropZone.addEventListener(name, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropZone.classList.add('dragover');
+    });
+  });
+
+  ['dragleave', 'drop'].forEach(name => {
+    dropZone.addEventListener(name, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropZone.classList.remove('dragover');
+    });
+  });
+
+  dropZone.addEventListener('drop', (e) => {
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) {
+      fileInput.files = files;
+      handleScriptFile(files[0]);
+    }
+  });
+
+  fileInput.onchange = () => {
+    if (fileInput.files && fileInput.files.length > 0) {
+      handleScriptFile(fileInput.files[0]);
+    }
+  };
+
+  async function handleScriptFile(file) {
+    if (!file) return;
+
+    // Validate size (max 5MB = 5 * 1024 * 1024 bytes)
+    const MAX_SIZE = 5 * 1024 * 1024;
+    if (file.size > MAX_SIZE) {
+      statusEl.className = 'script-status error';
+      statusEl.textContent = `❌ File size (${(file.size / (1024 * 1024)).toFixed(1)}MB) exceeds the 5MB limit. Please upload a smaller PDF screenplay.`;
+      statusEl.classList.remove('hidden');
+      resultsWrap.classList.add('hidden');
+      return;
+    }
+
+    if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
+      statusEl.className = 'script-status error';
+      statusEl.textContent = '❌ Invalid file type. Please upload a valid PDF screenplay (.pdf).';
+      statusEl.classList.remove('hidden');
+      resultsWrap.classList.add('hidden');
+      return;
+    }
+
+    // Auto-open Script Breakdown panel if collapsed
+    const breakdownDetails = document.getElementById('script-breakdown');
+    if (breakdownDetails) {
+      breakdownDetails.open = true;
+      breakdownDetails.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    // Show processing states
+    statusEl.className = 'script-status info';
+    statusEl.textContent = `⏳ Parsing screenplay "${file.name}"...`;
+    statusEl.classList.remove('hidden');
+    resultsWrap.classList.add('hidden');
+    showBgProcess(`Analyzing script: ${file.name}`);
+
+    try {
+      const locations = await parseScript(file);
+      hideBgProcess();
+
+      if (!locations || locations.length === 0) {
+        statusEl.className = 'script-status info';
+        statusEl.textContent = `ℹ️ Screenplay loaded, but no location keywords or budget criteria were matched.`;
+        return;
+      }
+
+      statusEl.className = 'script-status success';
+      statusEl.textContent = `✅ Successfully extracted ${locations.length} location requirement criteria from "${file.name}".`;
+
+      // Render results
+      resultsEl.innerHTML = '';
+      countEl.textContent = `${locations.length} tags`;
+
+      const tagsForSearch = [];
+
+      locations.forEach(loc => {
+        const card = document.createElement('div');
+        card.className = 'location-card';
+
+        let categoryBadge = '📍 LOCATION';
+        if (loc.type === 'city') categoryBadge = '🏙️ CITY';
+        else if (loc.type === 'scene') categoryBadge = '🎬 SCENE';
+        else if (loc.type === 'feature') categoryBadge = '🌲 FEATURE';
+        else if (loc.type === 'budget') categoryBadge = '💰 BUDGET';
+        else if (loc.category) categoryBadge = `🏠 ${escapeHtml(loc.category.toUpperCase())}`;
+
+        card.innerHTML = `<span class="tag-type">${categoryBadge}</span> <span>${escapeHtml(loc.name)}</span>`;
+
+        tagsForSearch.push(loc.name);
+
+        // Click card to search that single keyword
+        card.onclick = () => {
+          const aiInput = document.getElementById('ai-input');
+          if (aiInput) {
+            aiInput.value = loc.name;
+            playClapAnimation();
+            playIrisTransition();
+            runAISearch(loc.name);
+          }
+        };
+
+        resultsEl.appendChild(card);
+      });
+
+      resultsWrap.classList.remove('hidden');
+
+      // Setup Enhance with AI button
+      if (enhanceBtn) {
+        enhanceBtn.classList.remove('hidden');
+        enhanceBtn.onclick = () => {
+          const queryText = tagsForSearch.join(' ');
+          const aiInput = document.getElementById('ai-input');
+          if (aiInput) {
+            aiInput.value = queryText;
+          }
+          playClapAnimation();
+          playIrisTransition();
+          runAISearch(queryText);
+        };
+      }
+
+      // Render persistent location checklist panel
+      const checklistPanel = document.getElementById('script-checklist-panel');
+      const checklistItemsEl = document.getElementById('script-checklist-items');
+      const checklistProgressEl = document.getElementById('checklist-progress');
+
+      if (checklistPanel && checklistItemsEl) {
+        checklistItemsEl.innerHTML = '';
+        let checkedCount = 0;
+
+        const updateProgress = () => {
+          if (checklistProgressEl) {
+            checklistProgressEl.textContent = `${checkedCount}/${locations.length} checked`;
+          }
+        };
+
+        locations.forEach((loc, idx) => {
+          const item = document.createElement('div');
+          item.className = 'checklist-item';
+
+          let categoryBadge = '📍';
+          if (loc.type === 'city') categoryBadge = '🏙️';
+          else if (loc.type === 'scene') categoryBadge = '🎬';
+          else if (loc.type === 'feature') categoryBadge = '🌲';
+          else if (loc.type === 'budget') categoryBadge = '💰';
+
+          item.innerHTML = `
+            <div class="checklist-item-left">
+              <input type="checkbox" id="chk-${idx}" class="checklist-checkbox" />
+              <span class="checklist-item-name">${categoryBadge} ${escapeHtml(loc.name)}</span>
+            </div>
+            <button class="checklist-search-btn" title="Search for this location on the map">Search 🔍</button>
+          `;
+
+          const checkbox = item.querySelector('.checklist-checkbox');
+          const searchBtn = item.querySelector('.checklist-search-btn');
+
+          checkbox.onchange = () => {
+            if (checkbox.checked) {
+              item.classList.add('done');
+            } else {
+              item.classList.remove('done');
+            }
+            checkedCount = checklistItemsEl.querySelectorAll('.checklist-checkbox:checked').length;
+            updateProgress();
+          };
+
+          searchBtn.onclick = () => {
+            const aiInput = document.getElementById('ai-input');
+            if (aiInput) {
+              aiInput.value = loc.name;
+            }
+            checkbox.checked = true;
+            item.classList.add('done');
+            checkedCount = checklistItemsEl.querySelectorAll('.checklist-checkbox:checked').length;
+            updateProgress();
+            playClapAnimation();
+            playIrisTransition();
+            runAISearch(loc.name);
+          };
+
+          checklistItemsEl.appendChild(item);
+        });
+
+        updateProgress();
+        checklistPanel.classList.remove('hidden');
+      }
+
+    } catch (err) {
+      console.error('[scriptParser] Error:', err);
+      hideBgProcess();
+      statusEl.className = 'script-status error';
+      statusEl.textContent = `❌ Failed to parse PDF: ${err.message || 'Unknown error'}`;
+    }
+  }
+}
+
 function initFilters() {
   const sel = document.getElementById('center-select');
   for (const c of CENTERS) {
@@ -936,6 +1190,7 @@ async function init() {
   document.fonts?.ready.then(syncHeaderHeight);
   initAISearch();
   initFilters();
+  setupScriptBreakdown();
   getOrCreateExploreButton();
   syncFilterControls();
   loadCatalog(); // fire-and-forget — renders again when data lands

@@ -3,6 +3,10 @@ const express = require('express');
 const cors = require('cors'); // enable CORS
 const path = require('path');
 const fs = require('fs');
+// Offline fallback modules
+const { fallbackParseQuery } = require('./parse-query-fallback');
+const { fallbackGeocode } = require('./geocode-fallback');
+const { fallbackPlacesSearch } = require('./places-fallback');
 
 const app = express();
 app.use(cors());
@@ -74,21 +78,20 @@ app.get('/api/geocode', async (req, res) => {
   // Return cached if available — skips the queue entirely.
   if (cache[address]) return res.json(cache[address]);
 
+  // If LocationIQ key missing, use offline fallback
   if (!LOCATIONIQ_KEY || LOCATIONIQ_KEY === 'YOUR_KEY_HERE') {
-    return res.status(500).json({ error: 'LOCATIONIQ_KEY not set. Get a free key at locationiq.com/register' });
+    console.log('[fallback] LocationIQ key missing – using offline geocode');
+    const result = fallbackGeocode(address);
+    cache[address] = result;
+    return res.json(result);
   }
 
-  const url = `https://us1.locationiq.com/v1/search`
-    + `?key=${LOCATIONIQ_KEY}`
-    + `&format=json&limit=1&countrycodes=us`
-    + `&q=${encodeURIComponent(address)}`;
+  const url = `https://us1.locationiq.com/v1/search?key=${LOCATIONIQ_KEY}&format=json&limit=1&countrycodes=us&q=${encodeURIComponent(address)}`;
 
   try {
     const data = await enqueue(async () => {
       const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
       if (!response.ok) {
-        // LocationIQ returns 404 for "no match found" — treat that as an
-        // empty result, not an error, so the frontend can handle it gracefully.
         if (response.status === 404) return [];
         const err = new Error('LocationIQ error');
         err.status = response.status;
@@ -100,7 +103,11 @@ app.get('/api/geocode', async (req, res) => {
     res.json(data);
   } catch (e) {
     console.error('Geocode proxy error', e);
-    res.status(e.status || 500).json({ error: e.message || 'Internal server error' });
+    // Fallback on error
+    console.log('[fallback] Geocode request error – using offline geocode');
+    const result = fallbackGeocode(address);
+    cache[address] = result;
+    res.json(result);
   }
 });
 
@@ -131,7 +138,7 @@ Output ONLY a JSON object, no prose, matching exactly this shape:
       //   forest/woods -> [{"key":"natural","value":"wood"}]
       //   waterfall   -> [{"key":"waterway","value":"waterfall"}]
       //   cliff       -> [{"key":"natural","value":"cliff"}]
-      //   cave        -> [{"key":"natural","value":"cave_entrance"}]
+      //   cave        -> [{"key":"cave_entrance","value":"yes"}]
       //   park        -> [{"key":"leisure","value":"park"}]
       //   island      -> [{"key":"place","value":"island"}]
       // If you are not confident of a real OSM tag for the feature, still make your
@@ -167,8 +174,11 @@ app.post('/api/parse-query', async (req, res) => {
     return res.status(400).json({ error: 'Missing query' });
   }
 
+  // If Groq key missing, use offline fallback parser
   if (!GROQ_API_KEY || GROQ_API_KEY === 'YOUR_GROQ_KEY_HERE') {
-    return res.status(500).json({ error: 'GROQ_API_KEY not set. Get a free key at console.groq.com/keys' });
+    console.log('[fallback] Groq key missing – using local parser');
+    const parsed = fallbackParseQuery(query);
+    return res.json(parsed);
   }
 
   try {
@@ -187,34 +197,41 @@ app.post('/api/parse-query', async (req, res) => {
         response_format: { type: 'json_object' },
         temperature: 0.1,
       }),
-      // Without this, a hung connection to Groq left the client's "Reading…"
-      // state stuck forever — nothing ever rejected, so the frontend's own
-      // try/finally never ran.
       signal: AbortSignal.timeout(15000),
     });
 
     if (!response.ok) {
       const errText = await response.text();
       console.error('Groq API error', response.status, errText);
-      return res.status(response.status).json({ error: 'Groq API error' });
+      // Fallback on API error
+      console.log('[fallback] Groq API error – using local parser');
+      const parsed = fallbackParseQuery(query);
+      return res.json(parsed);
     }
 
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content;
-    if (!content) return res.status(500).json({ error: 'Empty Groq response' });
+    if (!content) {
+      console.log('[fallback] Groq empty response – using local parser');
+      const parsed = fallbackParseQuery(query);
+      return res.json(parsed);
+    }
 
     let parsed;
     try {
       parsed = JSON.parse(content);
     } catch (e) {
       console.error('Failed to parse Groq JSON output', content);
-      return res.status(500).json({ error: 'Groq returned invalid JSON' });
+      console.log('[fallback] Groq invalid JSON – using local parser');
+      parsed = fallbackParseQuery(query);
     }
 
     res.json(parsed);
   } catch (e) {
     console.error('Groq proxy error', e);
-    res.status(500).json({ error: 'Internal server error' });
+    console.log('[fallback] Groq request error – using local parser');
+    const parsed = fallbackParseQuery(query);
+    res.json(parsed);
   }
 });
 
@@ -328,8 +345,14 @@ let placesCache = {}; // query hash -> parsed result, in-memory only (see note a
 app.get('/api/places-search', async (req, res) => {
   const { lat, lng, radiusMi, query } = req.query;
   if (!lat || !lng || !query) return res.status(400).json({ error: 'Missing lat/lng/query' });
+
+  // If Foursquare key missing, use fallback empty array
   if (!FOURSQUARE_API_KEY || FOURSQUARE_API_KEY === 'YOUR_FOURSQUARE_KEY_HERE') {
-    return res.status(500).json({ error: 'FOURSQUARE_API_KEY not set. Get a free key at foursquare.com/developers' });
+    console.log('[fallback] Foursquare key missing – returning empty places');
+    const result = fallbackPlacesSearch();
+    const fallbackKey = 'places:fallback:' + hashQuery(`${query}|${(+lat).toFixed(3)},${(+lng).toFixed(3)}`);
+    placesCache[fallbackKey] = result;
+    return res.json(result);
   }
 
   // Foursquare caps radius at 100,000m; clamp rather than error on a wide search.
@@ -378,8 +401,12 @@ app.get('/api/places-search', async (req, res) => {
     placesCache[key] = results;
     res.json(results);
   } catch (e) {
-    console.error('Places search error:', e.message);
-    res.status(e.status || 500).json({ error: e.message || 'Internal server error' });
+    console.error('Places search error', e);
+    // Fallback on error – empty array
+    console.log('[fallback] Places request error – returning empty array');
+    const result = fallbackPlacesSearch();
+    placesCache[key] = result;
+    res.json(result);
   }
 });
 

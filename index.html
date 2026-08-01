@@ -7,11 +7,12 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%2317130f'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%23c1493a' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='3' fill='%23c1493a'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="vendor/maplibre-gl/maplibre-gl.css">
-  <link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/style.css">
   <script type="importmap">
     { "imports": {
       "three": "/vendor/three/three.module.js",
-      "three-mesh-bvh": "/vendor/three-mesh-bvh/index.module.js"
+      "three-mesh-bvh": "/vendor/three-mesh-bvh/index.module.js",
+      "pdfjs-dist/legacy/build/pdf.js": "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.mjs"
     } }
   </script>
 </head>
@@ -24,7 +25,11 @@
 
   <header>
     <div class="logo">Scene<em>Scout</em></div>
-    <div class="tagline">Find it on the map · Walk it in 3D · Check the street</div>
+    <div class="tagline">To see a location, select 3D and Explore Globe options</div>
+    <div id="bg-process-indicator" class="bg-process-indicator hidden" role="status">
+      <span class="bg-pulse-dot"></span>
+      <span id="bg-process-text">Processing background task...</span>
+    </div>
     <div class="spacer"></div>
     <button id="settings-btn">⚙ Settings</button>
   </header>
@@ -43,8 +48,46 @@
         </div>
         <div id="ai-interpreted" class="ai-interpreted hidden"></div>
       </section>
+        <!-- Script Breakdown Panel -->
+        <details id="script-breakdown" class="panel-details">
+          <summary class="panel-summary">
+            <span class="summary-icon">📜</span>
+            <span class="summary-title">Script Breakdown (PDF Screenplay)</span>
+            <span class="summary-badge">PDF AI</span>
+          </summary>
+          <div class="panel-content">
+            <label id="script-drop-zone" for="script-upload" class="drop-zone">
+              <div class="drop-zone-icon">📄</div>
+              <div class="drop-zone-text">Drop screenplay PDF or <strong>click to upload</strong></div>
+              <div class="drop-zone-subtext">Max 5MB file size</div>
+              <input type="file" id="script-upload" accept="application/pdf" class="file-input-hidden" />
+            </label>
+            <div id="script-status" class="script-status hidden"></div>
+            
+            <div id="script-results-wrap" class="script-results-wrap hidden">
+              <div class="results-header">
+                <span class="results-title">Extracted Locations & Criteria</span>
+                <span id="results-count" class="results-count">0 tags</span>
+              </div>
+              <div id="script-results" class="script-results"></div>
+              <button id="enhance-ai" class="btn btn-accent enhance-btn hidden">
+                ✨ Filter Map with Script Locations
+              </button>
 
-      <details id="filters-wrap" open>
+              <!-- Persistent Script Location Reference Checklist -->
+              <div id="script-checklist-panel" class="checklist-panel hidden">
+                <div class="checklist-header">
+                  <span class="checklist-title">📍 Required Script Locations</span>
+                  <span id="checklist-progress" class="checklist-progress">0/0 done</span>
+                </div>
+                <div class="checklist-subtext">Always-visible reference list for your screenplay locations:</div>
+                <div id="script-checklist-items" class="checklist-items"></div>
+              </div>
+            </div>
+          </div>
+        </details>
+
+      <details id="filters-wrap">
         <summary>Refine filters</summary>
       <section id="filters">
         <div class="filter-grid">
@@ -191,6 +234,13 @@
         photogrammetry (Matterport SDK, NeRF / Gaussian splatting). Scraping Zillow directly
         violates their terms of service, so this prototype keeps that boundary clean.
       </div>
+    </div>
+  </div>
+
+  <div id="global-loading-overlay" class="loading-overlay hidden">
+    <div class="loading-box">
+      <div class="spinner"></div>
+      <div id="global-loading-text" class="loading-text">Processing background task...</div>
     </div>
   </div>
 
