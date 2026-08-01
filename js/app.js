@@ -780,10 +780,8 @@ function exitExploreMode() {
   document.getElementById('explore-toggle')?.classList.remove('active');
   hideStarfield();
   stopGlobeSpin();
-  // setGlobeMode(false) resets pendingProjection to mercator so the style.load
-  // handler inside removeHoloStyle's setStyle() call restores flat projection.
-  setGlobeMode(false);
   removeHoloStyle();
+  setGlobeMode(false);
   closeDiscoverPanel();
   if (state.view === '3d') flyHome3D(state.center);
 }
