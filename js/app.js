@@ -14,7 +14,7 @@ import { openTour } from './tour.js';
 import { DEBUG_LOCATIONS } from './floorplanGen.js';
 import { parseQuery } from './nlp.js';
 import { computeSuitability } from './score.js';
-import { sunTimes, sunPosition, fmtTime, fmtTimeAt, tzAbbr, compass, geocode, forecast, weatherText, fetchLocationPhotos, fetchPlaceInfo, reverseGeocode } from './intel.js';
+import { sunTimes, sunPosition, fmtTime, fmtTimeAt, tzAbbr, compass, geocode, forecast, weatherText, fetchPlaceInfo, reverseGeocode } from './intel.js';
 import { ensure3D, resize3D, update3D, flyHome3D, flyToListing3D, setGlobeMode, flyToGlobalView, startGlobeSpin, stopGlobeSpin, showStarfield, hideStarfield } from './map3d.js';
 import { findNaturalFeatures } from './NaturalFeatures.js';
 import { findRealPlaces } from './RealPlaces.js';
@@ -820,8 +820,6 @@ async function handleGlobeClick(lat, lng) {
 
   const place = await reverseGeocode(lat, lng);
   const label = place?.label || `${lat.toFixed(3)}, ${lng.toFixed(3)}`;
-  // Explore-the-globe is always a real place, same reasoning as renderPhotos.
-  const photos = await fetchLocationPhotos(label, true);
 
   panel.innerHTML = `
     <div class="discover-head">
@@ -829,13 +827,12 @@ async function handleGlobeClick(lat, lng) {
       <button class="discover-close" id="discover-close">✕</button>
     </div>
     <div class="discover-coords">${lat.toFixed(4)}, ${lng.toFixed(4)}</div>
-    ${photos.length ? `
-      <div class="photos-grid">
-        ${photos.slice(0, 6).map(p => `
-          <a class="photo-tile" href="${escapeHtml(p.url || p.image)}" target="_blank" rel="noopener">
-            <img src="${escapeHtml(p.thumbnail || p.image)}" alt="${escapeHtml(p.title || label)}" loading="lazy" />
-          </a>`).join('')}
-      </div>` : `<div class="photos-empty">No photos found for this spot.</div>`}
+    <div class="sv-links">
+      <a class="btn" target="_blank" rel="noopener"
+         href="https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat},${lng}">Open Street View ↗</a>
+      <a class="btn" target="_blank" rel="noopener"
+         href="https://earth.google.com/web/search/${lat},${lng}">Open Google Earth ↗</a>
+    </div>
     <button class="btn" id="discover-search-here">Search near here</button>`;
 
   document.getElementById('discover-close').onclick = closeDiscoverPanel;
