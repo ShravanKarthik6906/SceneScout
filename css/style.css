@@ -109,7 +109,7 @@
   --slate-line: rgba(255, 255, 255, 0.14); /* chalk-ruled field dividers */
   --chalk: #e9e7e1;
   --grain-opacity: 0.06;
-  --letterbox: 28px;
+  --letterbox: 0px;
   --header-h: 58px;
   --sidebar-top: 18px;
   --sidebar-bottom-gap: 22px;
