@@ -8,8 +8,8 @@
 // "search to see locations" placeholder until the fetch resolves.
 let LOCATIONS = [];
 import { TYPES, CENTERS, LIGHT_LABELS } from './catalog.js';
-import { initMap, updateMap, flyToListing, fitToRadius, setSelectedMarker, clearSelectedMarker, setSatellite, isSatellite, getMarkerScreenPos, focusPin } from './map.js';
-import { drawPlanThumb, drawIsoHero } from './thumbs.js';
+import { initMap, updateMap, flyToListing, fitToRadius, setSelectedMarker, clearSelectedMarker, setSatellite, isSatellite } from './map.js';
+import { drawIsoHero } from './thumbs.js';
 import { openTour } from './tour.js';
 import { DEBUG_LOCATIONS } from './floorplanGen.js';
 import { parseQuery } from './nlp.js';
@@ -115,10 +115,6 @@ function setImmersive(reason, active) {
   const on = immersiveReasons.size > 0;
   document.getElementById('letterbox-top')?.classList.toggle('retracted', on);
   document.getElementById('letterbox-bottom')?.classList.toggle('retracted', on);
-  // #filmstrip's CSS keys its bottom offset off this too, so it collapses
-  // back down flush with the viewport in lockstep with the bars retracting,
-  // instead of leaving a stale gap where the (now invisible) bar used to be.
-  document.body.classList.toggle('immersive', on);
 }
 
 // --header-h drives both the top letterbox's offset (so it starts below the
@@ -274,73 +270,6 @@ function render() {
   refreshDynamicTypesIfNeeded();   // same, for real-business type searches (e.g. real studios)
   const results = runSearch();
 
-  // Natural features (lakes, mountains, ...) still come from OpenStreetMap;
-  // type searches (e.g. real studios) come from Foursquare — say whichever
-  // is actually true rather than a source name for both.
-  const loadingSource = dynamicFetchInFlight ? 'OpenStreetMap' : 'Foursquare';
-  const loadingLabel = dynamicFetchInFlight
-    ? `“${state.dynamicFeature.label}”`
-    : [...state.types].filter(t => REAL_SEARCHABLE_TYPES[t]).map(t => `“${TYPES[t].label}”`).join(' + ');
-  const anyFetchInFlight = dynamicFetchInFlight || dynamicTypeFetchInFlight;
-
-  document.getElementById('results-meta').innerHTML = anyFetchInFlight
-    ? `Searching ${loadingSource} for ${escapeHtml(loadingLabel)} nearby…`
-    : !state.hasSearched
-    ? `Search to see locations near ${escapeHtml(state.centerName)}`
-    : `<b>${results.length}</b> of ${LOCATIONS.length + dynamicLocations.length + dynamicTypeLocations.length} real locations within ${state.radiusMi} mi of ${escapeHtml(state.centerName)}`;
-
-  const list = document.getElementById('results');
-  list.innerHTML = '';
-  if (anyFetchInFlight) {
-    list.innerHTML = `<div class="loading-state">
-      <div class="spinner"></div>
-      Searching ${loadingSource} for ${escapeHtml(loadingLabel)} nearby…
-    </div>`;
-  } else if (!results.length) {
-    list.innerHTML = !state.hasSearched
-      ? `<div class="empty">No locations pinned yet — describe what you need above, or pick a type below.</div>`
-      : state.dynamicFeature
-      ? `<div class="empty">No ${escapeHtml(state.dynamicFeature.label.toLowerCase())} pinned within ${state.radiusMi} mi. Widen the radius or try a different feature.</div>`
-      : `<div class="empty">No locations pinned within ${state.radiusMi} mi. Widen the radius, search another city, or click the map to move the center.</div>`;
-  } else {
-    results.forEach((loc, i) => {
-      const t = typeInfo(loc);
-      const card = document.createElement('article');
-      card.className = 'card';
-      card.innerHTML = `
-        <div class="card-top">
-          <span class="frame-num">N°${String(i + 1).padStart(2, '0')}</span>
-          <span class="match" style="--pct:${loc.score}">${loc.score}%</span>
-        </div>
-        <canvas width="300" height="150"></canvas>
-        <div class="card-body">
-          <h3>${escapeHtml(loc.name)}</h3>
-          <div class="card-sub">${t.icon} ${t.label} · ${escapeHtml(loc.neighborhood)}</div>
-          <div class="card-stats">
-            <span>${loc.sqft.toLocaleString()} ft²</span>
-            <span>${loc.ceilingFt ? loc.ceilingFt + ' ft ceil' : 'open air'}</span>
-            <span>$${loc.rate}/day</span>
-            <span>${loc.distMi.toFixed(1)} mi</span>
-          </div>
-        </div>`;
-      // thumbs.js was written for curated floor-plan locations; guard so a
-      // dynamic feature (no floor plan) can't crash the whole results render.
-      try {
-        drawPlanThumb(loc, card.querySelector('canvas'));
-      } catch (e) {
-        console.warn('[thumbs] drawPlanThumb failed for', loc.id, e.message);
-      }
-      card.onclick = () => openDetail(loc);
-      card.addEventListener('mouseenter', () => showPinString(loc.id, card));
-      card.addEventListener('mouseleave', () => hidePinString(loc.id));
-      list.appendChild(card);
-    });
-  }
-  // expands the filmstrip tray from its slim collapsed state (just the
-  // meta/empty line) to full photo-frame height — see #filmstrip.has-results
-  // in css/style.css.
-  document.getElementById('filmstrip').classList.toggle('has-results', results.length > 0);
-
   // Before the first search, no markers should be on the map at all — not
   // even dimmed ones — so pass an empty set rather than the full catalog.
   const allLocations = state.hasSearched ? [...LOCATIONS, ...dynamicLocations, ...dynamicTypeLocations] : [];
@@ -350,31 +279,6 @@ function render() {
   // exposure-style HUD readout, top-left of the map viewport
   document.getElementById('hud-radius').textContent = `${state.radiusMi} MI`;
   document.getElementById('hud-count').textContent = `${results.length} RESULT${results.length === 1 ? '' : 'S'}`;
-}
-
-// -------------------------------------------------- pushpin<->filmstrip string
-// The signature corkboard interaction: hovering a filmstrip frame strings a
-// line to its pin on the map and pulls the pin into focus. 2D-map-only —
-// getMarkerScreenPos() returns null in 3D/globe view, where a pin has no
-// fixed screen position to draw to, and the string simply doesn't appear.
-function showPinString(id, cardEl) {
-  const pinPos = getMarkerScreenPos(id);
-  const path = document.getElementById('string-path');
-  if (!pinPos || !path) return;
-  const cardRect = cardEl.getBoundingClientRect();
-  const cardPt = { x: cardRect.left + cardRect.width / 2, y: cardRect.top };
-  // a real pinned string sags under its own weight — control point below
-  // the straight-line midpoint, not above it, for a slack-thread curve
-  // instead of an arc.
-  const midX = (pinPos.x + cardPt.x) / 2;
-  const midY = (pinPos.y + cardPt.y) / 2 + 35;
-  path.setAttribute('d', `M ${pinPos.x},${pinPos.y} Q ${midX},${midY} ${cardPt.x},${cardPt.y}`);
-  path.classList.add('active');
-  focusPin(id, true);
-}
-function hidePinString(id) {
-  document.getElementById('string-path')?.classList.remove('active');
-  focusPin(id, false);
 }
 
 // --------------------------------------------------------------- AI search

@@ -90,13 +90,8 @@
   src: url('../vendor/fonts/ibm-plex-mono-latin-500-normal.woff2') format('woff2');
 }
 
-/* Dark scout's-desk palette: a dim room, everything in shadow except the
-   physical paper objects — the index card and contact-sheet filmstrip —
-   which read as lit paper (--paper/--ink) sitting on top of the dark
-   environment (--bg/--panel/--text). --amber/--teal keep their old names
-   (touched by ~90 rules across this file) but now hold scout-red/
-   blueprint; --sun-gold is new, used sparingly for highlight states only.
-   --paper/--ink are new — used only by the literal paper surfaces. */
+/* Dark scout's-desk palette. --amber/--teal keep their old names (touched
+   by ~90 rules across this file) but now hold scout-red/blueprint. */
 :root {
   --bg: #17130f;
   --panel: #1e1a15;      /* dark elevated surface — header, HUD chrome */
@@ -106,9 +101,6 @@
   --muted: #8f8672;
   --amber: #c1493a;      /* grease-pencil red — primary */
   --teal: #5a828f;       /* blueprint slate-teal — secondary/map linework */
-  --sun-gold: #c89b3c;   /* sparing highlight only */
-  --paper: #ede6d6;      /* lit paper — filmstrip photo frames only */
-  --ink: #23201c;        /* dark ink — text on the paper surfaces above */
   /* the search/filter panel is a physical clapperboard, not a paper card —
      neutral charcoal (cooler than --bg's warm brown-black) so it reads as
      chalkboard/molded-plastic material, not aged wood. */
@@ -230,34 +222,6 @@ body::after {
   #iris-transition.play { animation: none; }
 }
 
-/* ---------------------------------------------------- pushpin/string overlay */
-/* Fixed to the viewport (not #map's own coordinate space) since the string
-   has to reach the filmstrip frame below the map too — app.js computes both
-   endpoints in viewport/screen coordinates via map.js's getMarkerScreenPos()
-   and the frame's own getBoundingClientRect(). */
-#string-svg {
-  position: fixed;
-  inset: 0;
-  width: 100vw;
-  height: 100vh;
-  z-index: 900;
-  pointer-events: none;
-  overflow: visible;
-}
-#string-path {
-  fill: none;
-  stroke: var(--sun-gold);
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-dasharray: 1 5;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-}
-#string-path.active { opacity: 0.9; }
-@media (prefers-reduced-motion: reduce) {
-  #string-path { transition: none; }
-}
-
 /* ---------------------------------------------------------------- header */
 header {
   min-height: var(--header-h);
@@ -355,8 +319,8 @@ header .spacer {
 /* ---------------------------------------------------------------- layout */
 /* No boxed sidebar-plus-pane split — the map is the base canvas, full-
    bleed under everything; search/filters float over it as a small "index
-   card" (#sidebar, now sized to its content, not the viewport height);
-   results live in a separate bottom-docked filmstrip (#filmstrip). */
+   card" (#sidebar, now sized to its content, not the viewport height).
+   Results surface as map pins only — click one to open its detail view. */
 #layout {
   position: relative;
   height: calc(100% - var(--header-h));
@@ -682,26 +646,6 @@ header .spacer {
 .pin2d.selected {
   background: var(--amber);
   box-shadow: 0 0 0 3px rgba(193, 73, 58, 0.35), 0 2px 8px rgba(0, 0, 0, 0.5);
-}
-
-/* small red circle pulled into focus around a pin when its matching
-   filmstrip frame is hovered — see #string-svg below for the connecting
-   string, and the mouseenter/mouseleave wiring in app.js's render(). */
-.pin2d.pin-focus::after {
-  content: '';
-  position: absolute;
-  inset: -7px;
-  border: 2px solid var(--amber);
-  border-radius: 50%;
-  transform: rotate(45deg); /* .pin2d itself is rotated -45deg for the teardrop shape */
-  animation: pin-focus-pulse 1.1s ease-out infinite;
-}
-@keyframes pin-focus-pulse {
-  0% { transform: rotate(45deg) scale(0.85); opacity: 1; }
-  100% { transform: rotate(45deg) scale(1.35); opacity: 0; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .pin2d.pin-focus::after { animation: none; opacity: 0.8; }
 }
 
 .pin2d.dim {
@@ -1040,225 +984,6 @@ input[type="range"] {
   background: rgba(193, 73, 58, 0.14);
   border-color: var(--amber);
   color: var(--amber);
-}
-
-/* Leaflet's own zoom control otherwise sits at the map container's true
-   bottom corner, which is now covered by the fixed, full-width #filmstrip
-   tray — clear it above the tray's tallest (has-results) state plus the
-   bottom letterbox, so it never sits on top of the tray's own content. */
-.leaflet-bottom.leaflet-right {
-  margin-bottom: 280px;
-}
-
-/* --------------------------------------------------------------- results */
-/* ------------------------------------------------------------- filmstrip */
-/* Bottom-docked tray, always present (like a physical contact-sheet
-   holder on the desk) so the empty/loading state is never hidden away —
-   it expands (not slides fully off-screen) when results actually land,
-   revealing the full-height photo frames. */
-#filmstrip {
-  position: fixed;
-  left: 0;
-  right: 0;
-  /* sits just above the bottom letterbox bar, not under it — at bottom:0
-     the bar (z-index 9998, opaque) painted directly over the filmstrip's
-     own bottom edge, the same overlap Fix 1 found at the header. Collapses
-     back to 0 in immersive mode (body.immersive), matching the bars'
-     own .retracted state instead of leaving a stale 28px gap once they've
-     visually disappeared. */
-  bottom: var(--letterbox);
-  z-index: 560;
-  background: var(--panel);
-  border-top: 1px solid var(--line);
-  box-shadow: 0 -10px 28px rgba(0, 0, 0, 0.5);
-  max-height: 92px;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  transition: max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1), bottom 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-}
-#filmstrip.has-results { max-height: 236px; }
-body.immersive #filmstrip { bottom: 0; }
-@media (prefers-reduced-motion: reduce) {
-  #filmstrip { transition: none; }
-}
-
-#results-meta {
-  font-family: var(--font-mono);
-  padding: 8px 18px;
-  font-size: 11px;
-  letter-spacing: 0.3px;
-  color: var(--muted);
-  border-bottom: 1px solid var(--line);
-  flex: 0 0 auto;
-}
-
-#results {
-  flex: 1;
-  overflow-x: auto;
-  overflow-y: hidden;
-  display: flex;
-  align-items: flex-start;
-  gap: 18px;
-  padding: 16px 18px 14px;
-}
-
-.empty {
-  color: var(--muted);
-  font-size: 12.5px;
-  line-height: 1.6;
-  padding: 6px 2px;
-  white-space: nowrap;
-}
-
-.loading-state {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  letter-spacing: 0.3px;
-  padding: 6px 2px;
-  white-space: nowrap;
-}
-
-.loading-state .spinner {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 auto;
-  border: 2px solid var(--line);
-  border-top-color: var(--amber);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .loading-state .spinner { animation: none; }
-}
-
-/* Contact-sheet frame: lit paper sitting in the dark tray, torn-corner
-   photo card with punched sprocket holes along the top/bottom edge and a
-   grease-pencil-style stamped frame number — the filmstrip's signature
-   look, not a generic list-item card. Slight alternating tilt so the row
-   reads as physically laid down, not a rigid grid. */
-.card {
-  position: relative;
-  flex: 0 0 auto;
-  width: 172px;
-  background: var(--paper);
-  color: var(--ink);
-  border-radius: 1px;
-  cursor: pointer;
-  padding: 9px 9px 11px;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
-  transform: rotate(var(--tilt, 0deg));
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
-}
-.card:nth-child(odd) { --tilt: -1.3deg; }
-.card:nth-child(even) { --tilt: 1deg; }
-
-.card:hover {
-  transform: rotate(0deg) translateY(-5px);
-  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.55);
-  z-index: 2;
-}
-
-.card::before,
-.card::after {
-  content: '';
-  position: absolute;
-  left: 5px;
-  right: 5px;
-  height: 6px;
-  background-image: radial-gradient(circle, var(--panel-2) 2px, transparent 2.2px);
-  background-size: 13px 6px;
-  background-repeat: repeat-x;
-}
-.card::before { top: 3px; }
-.card::after { bottom: 3px; }
-
-.card canvas {
-  width: 100%;
-  height: 90px;
-  display: block;
-  margin-top: 10px;
-  border: 1px solid rgba(35, 32, 28, 0.15);
-}
-
-.card-body {
-  padding: 8px 1px 0;
-}
-
-.card-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 6px;
-}
-
-.frame-num {
-  font-family: var(--font-display);
-  font-size: 10px;
-  color: var(--muted);
-  letter-spacing: 0.3px;
-}
-
-.card-top h3 {
-  font-family: var(--font-display);
-  font-size: 12px;
-  font-weight: 400;
-  letter-spacing: 0.2px;
-  line-height: 1.25;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* match score reads as a data readout, not a call-to-action — blueprint,
-   not scout-red, per the "never both accents on the same element" rule
-   (red here is reserved for the selected pin / active states). */
-.match {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 500;
-  color: var(--teal);
-  background: rgba(62, 92, 102, 0.12);
-  border-radius: 2px;
-  padding: 1px 5px;
-  white-space: nowrap;
-}
-
-.card-sub {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--muted);
-  margin-top: 3px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* the "handwritten grease-pencil label" — typed, not printed. */
-.card-stats {
-  font-family: var(--font-display);
-  display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
-  margin-top: 7px;
-}
-
-.card-stats span {
-  font-size: 9.5px;
-  color: var(--ink);
-  background: rgba(35, 32, 28, 0.06);
-  border: 1px solid rgba(35, 32, 28, 0.18);
-  border-radius: 2px;
-  padding: 2px 5px;
 }
 
 /* -------------------------------------------------------------- overlays */

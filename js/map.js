@@ -163,27 +163,6 @@ export function clearSelectedMarker() {
   if (el) el.classList.remove('selected');
 }
 
-// ------------------------------------------------ pushpin<->filmstrip string
-// The signature corkboard interaction: hovering a filmstrip frame draws a
-// string from it to its pin, and pulls the pin into focus with a small red
-// circle — 2D map only, since a screen-space pin position doesn't mean the
-// same thing once the 3D globe is in play.
-export function getMarkerScreenPos(id) {
-  const m = markers.get(id);
-  // app.js's setView() hides #map2d with visibility:hidden (not
-  // display:none) when 3D is active, so offsetParent/getClientRects can't
-  // detect it — check computed visibility directly instead.
-  if (!m || !map || getComputedStyle(map.getContainer()).visibility === 'hidden') return null;
-  const pt = map.latLngToContainerPoint(m.getLatLng());
-  const mapRect = map.getContainer().getBoundingClientRect();
-  return { x: mapRect.left + pt.x, y: mapRect.top + pt.y - 22 }; // -22: pin tip, not icon center
-}
-
-export function focusPin(id, on) {
-  const el = markers.get(id)?.getElement();
-  if (el) el.classList.toggle('pin-focus', on);
-}
-
 export function flyToListing(loc) {
   if (!map) return;
   map.flyTo([loc.lat, loc.lng], 14, { duration: 0.8 });
