@@ -1792,6 +1792,17 @@ input[type="range"] {
    paints behind the globe. pointer-events:none keeps all clicks/drags on the
    globe working normally. Hidden by default; shown only in Explore Globe mode
    via showStarfield() / hideStarfield() in map3d.js. */
+/* Cyan atmosphere halo around the globe — applied only in Explore Globe mode
+   via the .holo-glow class toggled by applyHoloStyle / removeHoloStyle.
+   The inset shadow darkens the outer rim slightly so the glow reads as
+   emanating from the sphere itself, not just a flat box. */
+#map3d.holo-glow {
+  box-shadow:
+    0 0 60px 18px rgba(0, 200, 220, 0.18),
+    0 0 120px 40px rgba(0, 180, 204, 0.10),
+    inset 0 0 80px 24px rgba(0, 0, 8, 0.55);
+}
+
 #starfield-canvas {
   position: absolute;
   inset: 0;

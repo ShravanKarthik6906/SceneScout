@@ -387,6 +387,240 @@ export function hideStarfield() {
   if (starCanvas) starCanvas.style.display = 'none';
 }
 
+// --------------------------------------------------------------- holo style
+// Applies/removes the cyan hologram look for Explore Globe mode.
+//
+// ON (enter): repaints key layers with setPaintProperty / hides label clutter
+//   with setLayoutProperty, adds a GeoJSON graticule line layer, and puts a
+//   CSS cyan glow on the map container.
+//
+// OFF (exit): calls map.setStyle(STYLE) to fully reset the style back to the
+//   original — cleanest possible undo, no brittle "remember old values" logic.
+//   The style.load handler already re-adds the building layer and re-applies
+//   the projection, so nothing extra is needed here.
+
+const HOLO = {
+  // Background / oceans — near-black void
+  background:     '#000810',
+  water:          '#010d1a',
+  waterLine:      '#061828',
+  // Land — glowing cyan
+  land:           '#00c8e0',
+  landDim:        '#007a8a',   // parks, residential, secondary landcover
+  landFaint:      '#004a58',   // minor landuse areas
+  // Roads — very dim, barely visible wiring
+  roadMajor:      '#0a3a52',
+  roadMinor:      '#05202e',
+  roadCasing:     '#020f18',
+  // Buildings
+  building:       '#00b4cc',
+  // Boundaries
+  boundary:       '#00e5ff',
+  // Labels — dim cyan, only country/state/city kept
+  labelText:      '#00e5ff',
+  labelHalo:      '#000810',
+};
+
+// Layer IDs whose visibility is set to 'none' in holo mode (all symbols
+// that make the globe look like a street map rather than a hologram).
+const HOLO_HIDE = [
+  'poi_r20','poi_r7','poi_r1','poi_transit',
+  'highway-name-path','highway-name-minor','highway-name-major',
+  'highway-shield-non-us','highway-shield-us-interstate','road_shield_us',
+  'road_one_way_arrow','road_one_way_arrow_opposite',
+  'airport',
+  'waterway_line_label','water_name_point_label','water_name_line_label',
+  'label_other','label_village','label_town',
+  // keep label_state, label_city*, label_country*
+];
+
+// Layers whose text/icon colour is changed to cyan (kept visible at globe zoom).
+const HOLO_LABELS_KEEP = [
+  'label_state','label_city','label_city_capital',
+  'label_country_3','label_country_2','label_country_1',
+];
+
+// Graticule: lines every 30° of lat and lng.
+function buildGraticuleGeoJSON() {
+  const features = [];
+  // Meridians (vertical lines)
+  for (let lng = -180; lng <= 180; lng += 30) {
+    const coords = [];
+    for (let lat = -90; lat <= 90; lat += 2) coords.push([lng, lat]);
+    features.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} });
+  }
+  // Parallels (horizontal lines)
+  for (let lat = -90; lat <= 90; lat += 30) {
+    const coords = [];
+    for (let lng = -180; lng <= 180; lng += 2) coords.push([lng, lat]);
+    features.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} });
+  }
+  return { type: 'FeatureCollection', features };
+}
+
+function applyHoloPaint() {
+  if (!map) return;
+  const s = HOLO;
+
+  // --- background / ocean ---
+  try { map.setPaintProperty('background',   'background-color', s.background); } catch {}
+  try { map.setPaintProperty('water',        'fill-color',       s.water);      } catch {}
+  try { map.setPaintProperty('natural_earth','raster-opacity',   0);            } catch {}
+
+  // waterways
+  ['waterway_river','waterway_other','waterway_tunnel'].forEach(id => {
+    try { map.setPaintProperty(id, 'line-color', s.waterLine); } catch {}
+  });
+
+  // --- land fills ---
+  ['landcover_wood','landcover_grass','landcover_wetland','landcover_sand',
+   'landcover_ice'].forEach(id => {
+    try { map.setPaintProperty(id, 'fill-color', s.landDim); } catch {}
+  });
+  ['park'].forEach(id => {
+    try { map.setPaintProperty(id, 'fill-color', s.landDim); } catch {}
+  });
+  ['park_outline'].forEach(id => {
+    try { map.setPaintProperty(id, 'line-color', s.landDim); } catch {}
+  });
+  ['landuse_residential','landuse_pitch','landuse_track',
+   'landuse_cemetery','landuse_hospital','landuse_school'].forEach(id => {
+    try { map.setPaintProperty(id, 'fill-color', s.landFaint); } catch {}
+  });
+  // aeroway
+  ['aeroway_fill'].forEach(id => {
+    try { map.setPaintProperty(id, 'fill-color', s.landFaint); } catch {}
+  });
+  ['aeroway_runway','aeroway_taxiway'].forEach(id => {
+    try { map.setPaintProperty(id, 'line-color', s.roadMinor); } catch {}
+  });
+
+  // --- roads (keep faint so globe reads as "wired") ---
+  ['road_motorway','road_trunk_primary','road_secondary_tertiary'].forEach(id => {
+    try { map.setPaintProperty(id, 'line-color', s.roadMajor); } catch {}
+  });
+  ['road_minor','road_service_track','road_link',
+   'road_motorway_link'].forEach(id => {
+    try { map.setPaintProperty(id, 'line-color', s.roadMinor); } catch {}
+  });
+  // casings
+  ['road_motorway_casing','road_trunk_primary_casing','road_secondary_tertiary_casing',
+   'road_minor_casing','road_service_track_casing','road_link_casing',
+   'road_motorway_link_casing'].forEach(id => {
+    try { map.setPaintProperty(id, 'line-color', s.roadCasing); } catch {}
+  });
+  // bridge / tunnel — same dim palette
+  ['bridge_motorway','bridge_trunk_primary','bridge_secondary_tertiary',
+   'bridge_street','bridge_link','bridge_service_track','bridge_motorway_link',
+   'bridge_path_pedestrian'].forEach(id => {
+    try { map.setPaintProperty(id, 'line-color', s.roadMinor); } catch {}
+  });
+  ['tunnel_motorway','tunnel_trunk_primary','tunnel_secondary_tertiary',
+   'tunnel_minor','tunnel_service_track','tunnel_link',
+   'tunnel_motorway_link','tunnel_path_pedestrian'].forEach(id => {
+    try { map.setPaintProperty(id, 'line-color', s.roadMinor); } catch {}
+  });
+  // rail
+  ['road_major_rail','road_transit_rail','road_major_rail_hatching',
+   'road_transit_rail_hatching','bridge_major_rail','bridge_transit_rail',
+   'tunnel_major_rail','tunnel_transit_rail'].forEach(id => {
+    try { map.setPaintProperty(id, 'line-color', s.roadMinor); } catch {}
+  });
+
+  // --- buildings ---
+  try { map.setPaintProperty('building', 'fill-color', s.building); map.setPaintProperty('building', 'fill-opacity', 0.7); } catch {}
+  try {
+    map.setPaintProperty('building-3d', 'fill-extrusion-color', s.building);
+    map.setPaintProperty('building-3d', 'fill-extrusion-opacity', 0.6);
+  } catch {}
+
+  // --- boundaries ---
+  ['boundary_2','boundary_3'].forEach(id => {
+    try {
+      map.setPaintProperty(id, 'line-color',   s.boundary);
+      map.setPaintProperty(id, 'line-opacity',  0.4);
+    } catch {}
+  });
+  try {
+    map.setPaintProperty('boundary_disputed', 'line-color',  s.boundary);
+    map.setPaintProperty('boundary_disputed', 'line-opacity', 0.2);
+  } catch {}
+
+  // --- hide noisy symbol layers ---
+  HOLO_HIDE.forEach(id => {
+    try { map.setLayoutProperty(id, 'visibility', 'none'); } catch {}
+  });
+
+  // --- dim kept labels to cyan ---
+  HOLO_LABELS_KEEP.forEach(id => {
+    try {
+      map.setPaintProperty(id, 'text-color', s.labelText);
+      map.setPaintProperty(id, 'text-halo-color', s.labelHalo);
+      map.setPaintProperty(id, 'text-halo-width', 1.5);
+    } catch {}
+  });
+
+  // --- atmosphere: use MapLibre v5 sky to give a deep-space feel ---
+  try {
+    map.setSky({
+      'sky-color':          '#000810',
+      'horizon-color':      '#001828',
+      'fog-color':          '#000810',
+      'fog-ground-blend':   0.02,
+      'horizon-fog-blend':  0.1,
+      'sky-horizon-blend':  0.1,
+      'atmosphere-blend':   ['interpolate',['linear'],['zoom'],0,1,5,0],
+    });
+  } catch {}
+
+  // --- graticule grid ---
+  try {
+    if (!map.getSource('ss-graticule')) {
+      map.addSource('ss-graticule', {
+        type: 'geojson',
+        data: buildGraticuleGeoJSON(),
+      });
+    }
+    if (!map.getLayer('ss-graticule-lines')) {
+      map.addLayer({
+        id: 'ss-graticule-lines',
+        type: 'line',
+        source: 'ss-graticule',
+        paint: {
+          'line-color':   '#00e5ff',
+          'line-opacity': 0.18,
+          'line-width':   0.6,
+        },
+      }, 'water'); // insert just above water so it sits under land fills
+    }
+  } catch (e) {
+    console.warn('[map3d] graticule add failed:', e.message);
+  }
+
+  // CSS glow on the container
+  const el = document.getElementById('map3d');
+  if (el) el.classList.add('holo-glow');
+}
+
+export function applyHoloStyle() {
+  if (!map) return;
+  if (map.isStyleLoaded()) {
+    applyHoloPaint();
+  } else {
+    map.once('style.load', applyHoloPaint);
+  }
+}
+
+export function removeHoloStyle() {
+  if (!map) return;
+  // Remove CSS glow immediately
+  const el = document.getElementById('map3d');
+  if (el) el.classList.remove('holo-glow');
+  // Full style reset — cleanest way to restore all paint properties.
+  // The persistent style.load handler re-adds buildings + re-applies projection.
+  map.setStyle(STYLE);
+}
+
 function fallbackHTML() {
   return `<div class="map3d-fallback">
     <h3>3D view unavailable offline</h3>
