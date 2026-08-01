@@ -118,29 +118,40 @@ export async function ensure3D(container, cb, mapClickCb) {
 // and spin, ensuring the globe is visible before the camera moves.
 export function setGlobeMode(enabled) {
   if (!map) return Promise.resolve();
-  pendingProjection = { type: enabled ? 'globe' : 'mercator' };
+  // `requested` is captured locally so a *later* call to setGlobeMode
+  // (e.g. the user clicking Explore Globe again before the style has
+  // finished loading) can't overwrite what *this* call is waiting to
+  // apply. pendingProjection itself is still updated — that's the shared
+  // "what should be active once the style is ready" value the persistent
+  // style.load listener in ensure3D re-applies after a satellite toggle —
+  // but this call's own deferred apply always uses its own request, not
+  // whatever pendingProjection has drifted to by the time style.load fires.
+  const requested = { type: enabled ? 'globe' : 'mercator' };
+  pendingProjection = requested;
 
-  function applyNow() {
-    map.setProjection(pendingProjection);
+  function applyNow(projection) {
+    map.setProjection(projection);
     const ver = maplibregl.getVersion?.() ?? maplibregl.version ?? 'unknown';
     console.log(
-      `[map3d] MapLibre v${ver} — projection set to "${pendingProjection.type}"`,
+      `[map3d] MapLibre v${ver} — projection set to "${projection.type}"`,
       '| style loaded:', map.isStyleLoaded()
     );
   }
 
   if (map.isStyleLoaded()) {
-    applyNow();
+    applyNow(requested);
     return Promise.resolve();
   }
 
-  // Style not yet loaded — wait for it, then apply.
+  // Style not yet loaded — wait for it, then apply this call's own request
+  // (not whatever pendingProjection may have become by then).
   return new Promise((resolve) => {
     function onStyleLoad() {
-      // addBuildingLayer + re-apply are handled by the persistent style.load
-      // listener registered in ensure3D; here we just need to apply, then
-      // resolve so the caller can proceed with fly-out / spin.
-      try { applyNow(); } catch (e) { console.warn('[map3d] setProjection deferred failed:', e.message); }
+      // addBuildingLayer + re-apply-on-reload are handled by the persistent
+      // style.load listener registered in ensure3D; here we just need to
+      // apply this call's own request, then resolve so the caller can
+      // proceed with fly-out / spin.
+      try { applyNow(requested); } catch (e) { console.warn('[map3d] setProjection deferred failed:', e.message); }
       resolve();
     }
     map.once('style.load', onStyleLoad);
