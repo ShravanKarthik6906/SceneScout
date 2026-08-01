@@ -387,6 +387,266 @@ export function hideStarfield() {
   if (starCanvas) starCanvas.style.display = 'none';
 }
 
+// --------------------------------------------------------------- holo style
+// Applies/removes the cyan hologram look for Explore Globe mode.
+//
+// Strategy: record every original paint/layout value before overwriting it,
+// so removeHoloStyle can restore them exactly without reloading the style.
+// map.setStyle() is intentionally NOT used — it tears down all custom layers
+// (ss-3d-buildings, markers) and triggers a full reload that breaks re-entry.
+//
+// Paint is applied on the 'idle' event (not 'style.load') so all layers are
+// fully registered and queryable before we touch them.
+
+const HOLO = {
+  background: '#000810',
+  water:      '#010d1a',
+  waterLine:  '#061828',
+  landDim:    '#007a8a',
+  landFaint:  '#004a58',
+  roadMajor:  '#0a3a52',
+  roadMinor:  '#05202e',
+  roadCasing: '#020f18',
+  building:   '#00b4cc',
+  boundary:   '#00e5ff',
+  labelText:  '#00e5ff',
+  labelHalo:  '#000810',
+};
+
+// [layerId, paintProp, holoValue]  — null holoValue means "hide" (visibility)
+const HOLO_OPS = [
+  ['background',   'background-color', HOLO.background],
+  ['water',        'fill-color',       HOLO.water],
+  ['natural_earth','raster-opacity',   0],
+  ['waterway_river',  'line-color', HOLO.waterLine],
+  ['waterway_other',  'line-color', HOLO.waterLine],
+  ['waterway_tunnel', 'line-color', HOLO.waterLine],
+  ['landcover_wood',    'fill-color', HOLO.landDim],
+  ['landcover_grass',   'fill-color', HOLO.landDim],
+  ['landcover_wetland', 'fill-color', HOLO.landDim],
+  ['landcover_sand',    'fill-color', HOLO.landDim],
+  ['landcover_ice',     'fill-color', HOLO.landDim],
+  ['park',              'fill-color', HOLO.landDim],
+  ['park_outline',      'line-color', HOLO.landDim],
+  ['landuse_residential','fill-color', HOLO.landFaint],
+  ['landuse_pitch',      'fill-color', HOLO.landFaint],
+  ['landuse_track',      'fill-color', HOLO.landFaint],
+  ['landuse_cemetery',   'fill-color', HOLO.landFaint],
+  ['landuse_hospital',   'fill-color', HOLO.landFaint],
+  ['landuse_school',     'fill-color', HOLO.landFaint],
+  ['aeroway_fill',       'fill-color', HOLO.landFaint],
+  ['aeroway_runway',     'line-color', HOLO.roadMinor],
+  ['aeroway_taxiway',    'line-color', HOLO.roadMinor],
+  ['road_motorway',             'line-color', HOLO.roadMajor],
+  ['road_trunk_primary',        'line-color', HOLO.roadMajor],
+  ['road_secondary_tertiary',   'line-color', HOLO.roadMajor],
+  ['road_minor',                'line-color', HOLO.roadMinor],
+  ['road_service_track',        'line-color', HOLO.roadMinor],
+  ['road_link',                 'line-color', HOLO.roadMinor],
+  ['road_motorway_link',        'line-color', HOLO.roadMinor],
+  ['road_motorway_casing',           'line-color', HOLO.roadCasing],
+  ['road_trunk_primary_casing',      'line-color', HOLO.roadCasing],
+  ['road_secondary_tertiary_casing', 'line-color', HOLO.roadCasing],
+  ['road_minor_casing',              'line-color', HOLO.roadCasing],
+  ['road_service_track_casing',      'line-color', HOLO.roadCasing],
+  ['road_link_casing',               'line-color', HOLO.roadCasing],
+  ['road_motorway_link_casing',      'line-color', HOLO.roadCasing],
+  ['bridge_motorway',            'line-color', HOLO.roadMinor],
+  ['bridge_trunk_primary',       'line-color', HOLO.roadMinor],
+  ['bridge_secondary_tertiary',  'line-color', HOLO.roadMinor],
+  ['bridge_street',              'line-color', HOLO.roadMinor],
+  ['bridge_link',                'line-color', HOLO.roadMinor],
+  ['bridge_service_track',       'line-color', HOLO.roadMinor],
+  ['bridge_motorway_link',       'line-color', HOLO.roadMinor],
+  ['bridge_path_pedestrian',     'line-color', HOLO.roadMinor],
+  ['tunnel_motorway',            'line-color', HOLO.roadMinor],
+  ['tunnel_trunk_primary',       'line-color', HOLO.roadMinor],
+  ['tunnel_secondary_tertiary',  'line-color', HOLO.roadMinor],
+  ['tunnel_minor',               'line-color', HOLO.roadMinor],
+  ['tunnel_service_track',       'line-color', HOLO.roadMinor],
+  ['tunnel_link',                'line-color', HOLO.roadMinor],
+  ['tunnel_motorway_link',       'line-color', HOLO.roadMinor],
+  ['tunnel_path_pedestrian',     'line-color', HOLO.roadMinor],
+  ['road_major_rail',             'line-color', HOLO.roadMinor],
+  ['road_transit_rail',           'line-color', HOLO.roadMinor],
+  ['road_major_rail_hatching',    'line-color', HOLO.roadMinor],
+  ['road_transit_rail_hatching',  'line-color', HOLO.roadMinor],
+  ['bridge_major_rail',           'line-color', HOLO.roadMinor],
+  ['bridge_transit_rail',         'line-color', HOLO.roadMinor],
+  ['tunnel_major_rail',           'line-color', HOLO.roadMinor],
+  ['tunnel_transit_rail',         'line-color', HOLO.roadMinor],
+  ['building',    'fill-color',    HOLO.building],
+  ['building',    'fill-opacity',  0.7],
+  ['building-3d', 'fill-extrusion-color',   HOLO.building],
+  ['building-3d', 'fill-extrusion-opacity', 0.6],
+  ['boundary_2', 'line-color',   HOLO.boundary],
+  ['boundary_2', 'line-opacity', 0.4],
+  ['boundary_3', 'line-color',   HOLO.boundary],
+  ['boundary_3', 'line-opacity', 0.4],
+  ['boundary_disputed', 'line-color',   HOLO.boundary],
+  ['boundary_disputed', 'line-opacity', 0.2],
+  ['label_state',        'text-color',      HOLO.labelText],
+  ['label_state',        'text-halo-color', HOLO.labelHalo],
+  ['label_state',        'text-halo-width', 1.5],
+  ['label_city',         'text-color',      HOLO.labelText],
+  ['label_city',         'text-halo-color', HOLO.labelHalo],
+  ['label_city',         'text-halo-width', 1.5],
+  ['label_city_capital', 'text-color',      HOLO.labelText],
+  ['label_city_capital', 'text-halo-color', HOLO.labelHalo],
+  ['label_city_capital', 'text-halo-width', 1.5],
+  ['label_country_1', 'text-color',      HOLO.labelText],
+  ['label_country_1', 'text-halo-color', HOLO.labelHalo],
+  ['label_country_1', 'text-halo-width', 1.5],
+  ['label_country_2', 'text-color',      HOLO.labelText],
+  ['label_country_2', 'text-halo-color', HOLO.labelHalo],
+  ['label_country_2', 'text-halo-width', 1.5],
+  ['label_country_3', 'text-color',      HOLO.labelText],
+  ['label_country_3', 'text-halo-color', HOLO.labelHalo],
+  ['label_country_3', 'text-halo-width', 1.5],
+];
+
+// Symbol layers to hide entirely in holo mode.
+const HOLO_HIDE = [
+  'poi_r20','poi_r7','poi_r1','poi_transit',
+  'highway-name-path','highway-name-minor','highway-name-major',
+  'highway-shield-non-us','highway-shield-us-interstate','road_shield_us',
+  'road_one_way_arrow','road_one_way_arrow_opposite',
+  'airport',
+  'waterway_line_label','water_name_point_label','water_name_line_label',
+  'label_other','label_village','label_town',
+];
+
+// Stored originals — populated by applyHoloPaint, consumed by removeHoloPaint.
+let holoOriginals = null;  // { paintOps: [[id, prop, origVal], ...], hideOps: [[id, origVisibility], ...] }
+
+function buildGraticuleGeoJSON() {
+  const features = [];
+  for (let lng = -180; lng <= 180; lng += 30) {
+    const coords = [];
+    for (let lat = -90; lat <= 90; lat += 2) coords.push([lng, lat]);
+    features.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} });
+  }
+  for (let lat = -90; lat <= 90; lat += 30) {
+    const coords = [];
+    for (let lng = -180; lng <= 180; lng += 2) coords.push([lng, lat]);
+    features.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} });
+  }
+  return { type: 'FeatureCollection', features };
+}
+
+function applyHoloPaint() {
+  if (!map) return;
+
+  // Record originals so we can restore them without a style reload.
+  const paintOriginals = [];
+  for (const [id, prop] of HOLO_OPS) {
+    try {
+      if (map.getLayer(id)) {
+        paintOriginals.push([id, prop, map.getPaintProperty(id, prop)]);
+      }
+    } catch {}
+  }
+  const hideOriginals = [];
+  for (const id of HOLO_HIDE) {
+    try {
+      if (map.getLayer(id)) {
+        hideOriginals.push([id, map.getLayoutProperty(id, 'visibility') ?? 'visible']);
+      }
+    } catch {}
+  }
+  holoOriginals = { paintOriginals, hideOriginals };
+
+  // Apply holo paint.
+  for (const [id, prop, val] of HOLO_OPS) {
+    try { if (map.getLayer(id)) map.setPaintProperty(id, prop, val); } catch {}
+  }
+  for (const id of HOLO_HIDE) {
+    try { if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', 'none'); } catch {}
+  }
+
+  // Atmosphere.
+  try {
+    map.setSky({
+      'sky-color':        '#000810',
+      'horizon-color':    '#001828',
+      'fog-color':        '#000810',
+      'fog-ground-blend': 0.02,
+      'horizon-fog-blend':0.1,
+      'sky-horizon-blend':0.1,
+      'atmosphere-blend': ['interpolate',['linear'],['zoom'],0,1,5,0],
+    });
+  } catch {}
+
+  // Graticule — add once, just toggle visibility.
+  try {
+    if (!map.getSource('ss-graticule')) {
+      map.addSource('ss-graticule', { type: 'geojson', data: buildGraticuleGeoJSON() });
+    }
+    if (!map.getLayer('ss-graticule-lines')) {
+      map.addLayer({
+        id: 'ss-graticule-lines', type: 'line', source: 'ss-graticule',
+        layout: { visibility: 'visible' },
+        paint: { 'line-color': '#00e5ff', 'line-opacity': 0.18, 'line-width': 0.6 },
+      }, 'water');
+    } else {
+      map.setLayoutProperty('ss-graticule-lines', 'visibility', 'visible');
+    }
+  } catch (e) { console.warn('[map3d] graticule:', e.message); }
+
+  // CSS glow.
+  document.getElementById('map3d')?.classList.add('holo-glow');
+}
+
+function removeHoloPaint() {
+  if (!map) return;
+
+  // Restore every paint property we changed.
+  if (holoOriginals) {
+    for (const [id, prop, origVal] of holoOriginals.paintOriginals) {
+      try {
+        if (map.getLayer(id)) {
+          if (origVal == null) {
+            // No original — remove the override so the style default takes back.
+            map.removeFeatureState({ source: id });
+          }
+          map.setPaintProperty(id, prop, origVal ?? undefined);
+        }
+      } catch {}
+    }
+    for (const [id, origVis] of holoOriginals.hideOriginals) {
+      try { if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', origVis); } catch {}
+    }
+    holoOriginals = null;
+  }
+
+  // Hide graticule without removing it.
+  try { map.setLayoutProperty('ss-graticule-lines', 'visibility', 'none'); } catch {}
+
+  // Restore sky to default.
+  try { map.setSky(null); } catch {}
+
+  // CSS glow off.
+  document.getElementById('map3d')?.classList.remove('holo-glow');
+}
+
+export function applyHoloStyle() {
+  if (!map) return;
+  // Wait for the map to be fully idle (all layers settled) before painting.
+  // 'idle' fires after style.load + all tiles rendered, so getPaintProperty
+  // is reliable and setPaintProperty takes effect immediately.
+  if (map.isStyleLoaded()) {
+    map.once('idle', applyHoloPaint);
+  } else {
+    // Style not loaded yet — wait for idle which fires after style.load settles.
+    map.once('idle', applyHoloPaint);
+  }
+}
+
+export function removeHoloStyle() {
+  if (!map) return;
+  removeHoloPaint();
+}
+
 function fallbackHTML() {
   return `<div class="map3d-fallback">
     <h3>3D view unavailable offline</h3>
