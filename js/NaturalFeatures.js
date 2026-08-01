@@ -172,7 +172,13 @@ async function findViaGeoNames(center, radiusMi, feature) {
             signal: AbortSignal.timeout(15000),
         });
         if (!res.ok) {
-            console.warn('[naturalFeatures] geonames-search proxy failed:', res.status);
+            // res.status alone doesn't say why — the server logs the real
+            // cause via console.error('GeoNames search error: ...'), but
+            // that only shows up in the server's own terminal, not here.
+            // Surface the response body too, so a 500 is diagnosable from
+            // just the browser console.
+            const body = await res.text().catch(() => '');
+            console.warn('[naturalFeatures] geonames-search proxy failed:', res.status, body);
             return [];
         }
         const places = await res.json();

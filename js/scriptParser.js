@@ -1,7 +1,20 @@
-import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.js';
 import { TYPES, METROS } from './catalog.js';
 
-GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.worker.mjs';
+// pdfjs-dist is loaded lazily (only when a PDF is actually parsed), not as a
+// static top-level import — a static import is resolved before this whole
+// module can even execute, so if the CDN it maps to (see the importmap in
+// index.html) is unreachable, app.js's import of this file would fail too
+// and take down the entire app, not just the Script Breakdown feature.
+let pdfjsPromise = null;
+function loadPdfjs() {
+  if (!pdfjsPromise) {
+    pdfjsPromise = import('pdfjs-dist/legacy/build/pdf.js').then((mod) => {
+      mod.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.worker.mjs';
+      return mod;
+    });
+  }
+  return pdfjsPromise;
+}
 
 // Common US cities & landmark location dictionary
 const POPULAR_CITIES = [
@@ -36,6 +49,7 @@ function readFileAsUint8Array(file) {
  * Extract plain text from all pages of a PDF.
  */
 async function pdfToText(file) {
+  const { getDocument } = await loadPdfjs();
   const data = await readFileAsUint8Array(file);
   const pdf = await getDocument({ data }).promise;
   const maxPages = pdf.numPages;
