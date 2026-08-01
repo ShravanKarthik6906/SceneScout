@@ -93,14 +93,14 @@
 /* Dark scout's-desk palette. --amber/--teal keep their old names (touched
    by ~90 rules across this file) but now hold scout-red/blueprint. */
 :root {
-  --bg: #17130f;
-  --panel: #1e1a15;      /* dark elevated surface — header, HUD chrome */
-  --panel-2: #14110d;    /* darker inset surface */
-  --line: #3a352b;       /* dark-theme border */
-  --text: #e8e0d0;       /* warm off-white, for text on dark surfaces */
-  --muted: #8f8672;
-  --amber: #c1493a;      /* grease-pencil red — primary */
-  --teal: #5a828f;       /* blueprint slate-teal — secondary/map linework */
+  --bg: #0b0d0d;
+  --panel: #131515;      /* dark elevated surface — header, HUD chrome */
+  --panel-2: #181b1b;    /* darker inset surface */
+  --line: #232626;       /* dark-theme border */
+  --text: #edeae0;       /* warm off-white, for text on dark surfaces */
+  --muted: #8a8782;
+  --amber: #c9962b;      /* gold amber — primary accent */
+  --teal: #3e6e6a;       /* teal — secondary accent */
   /* the search/filter panel is a physical clapperboard, not a paper card —
      neutral charcoal (cooler than --bg's warm brown-black) so it reads as
      chalkboard/molded-plastic material, not aged wood. */

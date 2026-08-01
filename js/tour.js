@@ -1003,7 +1003,7 @@ function drawMinimap(canvas, fp, bounds, x, z, yaw) {
     g.fillRect(ox + r.x * s, oz + r.z * s, r.w * s, r.d * s);
     g.strokeRect(ox + r.x * s, oz + r.z * s, r.w * s, r.d * s);
   }
-  g.strokeStyle = '#5aa7e8';
+  g.strokeStyle = '#e8b45a';
   g.lineWidth = 3;
   for (const d of fp.doors) {
     g.beginPath();
@@ -1233,13 +1233,13 @@ function clearMeasure() {
 function addMeasurePoint(worldPt) {
   const m = ctx.measure;
   const dot = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8),
-    new THREE.MeshBasicMaterial({ color: '#5aa7e8' }));
+    new THREE.MeshBasicMaterial({ color: '#e8b45a' }));
   dot.position.copy(worldPt); m.group.add(dot);
   m.pts.push(worldPt.clone());
   if (m.pts.length === 2) {
     const [a, bb] = m.pts;
     const geo = new THREE.BufferGeometry().setFromPoints([a, bb]);
-    m.group.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color: '#5aa7e8' })));
+    m.group.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color: '#e8b45a' })));
     const dist = a.distanceTo(bb);
     const mid = a.clone().add(bb).multiplyScalar(0.5); mid.y += 0.25;
     const label = makeLabelSprite(`${dist.toFixed(2)} m · ${(dist * 3.281).toFixed(1)} ft`);
