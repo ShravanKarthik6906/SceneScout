@@ -2,6 +2,9 @@
   "name": "photoscout-clean",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": "^20.19.0 || >=22.9.0"
+  },
   "scripts": {
     "dev": "node --env-file-if-exists=.env server.js",
     "start": "node server.js",
