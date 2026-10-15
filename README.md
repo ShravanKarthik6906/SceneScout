@@ -2,9 +2,8 @@
 
 **TL;DR:** Describe a film/photo shoot location in plain English and SceneScout finds matching places on a map, scores how well each fits your brief, and lets you walk through a procedurally generated 3D model of the space.
 
-<!-- TODO: add a screenshot or GIF, e.g. save it as docs/demo.gif and uncomment:
-![SceneScout demo](docs/demo.gif)
--->
+   [▶ Watch the demo](https://youtu.be/f9EXlhmHFOc)
+
 
 Built in July 2026 for a hackathon (theme: *Reimagine Creative Industries with AI*). It's no longer under active development and lives on as a portfolio project.
 
