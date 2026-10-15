@@ -8,6 +8,8 @@
 
 Built in July 2026 for a hackathon (theme: *Reimagine Creative Industries with AI*). It's no longer under active development and lives on as a portfolio project.
 
+Built with AI-assisted development: IBM Bob was used throughout.
+
 ## Features
 
 - **Natural-language search.** Type something like *"modern industrial warehouse with big windows near downtown Chicago, under $500 a day"*. An LLM (Groq) turns it into structured filters: building type, style, light, size, budget, radius, and location. If no Groq key is set, a local keyword parser takes over.
@@ -115,8 +117,13 @@ The app labels this data as simulated.
 
 SceneScout was built with AI-assisted development tools: **IBM Bob** and **Claude Code**. Much of the commit history was written through Claude Code, and the rest by the team.
 
-## Team
+## My contributions
 
-<!-- TODO: fill in names, roles, and links, e.g.
-- **Name** — role / what they built — [GitHub](https://github.com/...) · [LinkedIn](https://linkedin.com/in/...)
--->
+SceneScout began as a hackathon project. These are the parts I built and owned:
+
+- **AI search:** integrated the Groq LLM to turn free-text briefs into structured search filters, with a local keyword-parser fallback.
+- **3D digital twin:** took the walkthrough from prototype to realistic. I added procedural textures, environment lighting, bloom and tone mapping, and fixed first-person movement bugs.
+- **Explore Globe:** found and fixed a race condition in the map projection setup that made the first click fail.
+- **UI polish:** fixed layout clipping in the filter sidebar, removed visual clutter, and added Street View and Google Earth links to the globe click panel.
+- **Integration:** resolved merge conflicts between parallel implementations of the 3D renderer from different branches.
+- **Portfolio release:** rewrote this README, corrected inaccurate claims, fixed the LocationIQ key-check bug, and cleaned up leftover build files.
