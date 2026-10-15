@@ -6,8 +6,12 @@ import { TYPES } from './data.js';
 const AMBER = '#c9962b';
 const TEAL = '#3e6e6a';
 
-const DARK_TILES = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
-const DARK_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/attributions">CARTO</a>';
+// CARTO's free dark tiles now require an API key (they watermark every tile
+// without one), so use OpenStreetMap's keyless standard tiles and darken them
+// with a CSS filter (.dark-osm-tiles in css/style.css) to keep the dark look.
+const DARK_TILES = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+const DARK_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+const DARK_CLASS = 'dark-osm-tiles';
 // Esri World Imagery: free, keyless satellite tiles — lets a scout actually
 // see real rooftops/lots under the pins, not just a stylized vector map.
 const SAT_TILES = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
@@ -40,7 +44,7 @@ export function initMap({ onCenterChange, onMarkerClick }) {
     .setView([34.04, -118.25], 10);
   L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-  tileLayer = L.tileLayer(DARK_TILES, { maxZoom: 19, attribution: DARK_ATTR }).addTo(map);
+  tileLayer = L.tileLayer(DARK_TILES, { maxZoom: 19, attribution: DARK_ATTR, className: DARK_CLASS }).addTo(map);
 
   map.on('click', (e) => onCenterChange(e.latlng.lat, e.latlng.lng));
 
@@ -61,6 +65,7 @@ export function setSatellite(on) {
   tileLayer = L.tileLayer(satellite ? SAT_TILES : DARK_TILES, {
     maxZoom: 19,
     attribution: satellite ? SAT_ATTR : DARK_ATTR,
+    className: satellite ? '' : DARK_CLASS,
   }).addTo(map);
   tileLayer.bringToBack();
   return satellite;
