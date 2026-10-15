@@ -2313,3 +2313,8 @@ input[type="range"] {
   background: var(--amber);
   color: #fff;
 }
+/* Darkens OpenStreetMap's light tiles to match the app's dark theme
+   (see DARK_TILES in js/map.js). */
+.dark-osm-tiles {
+  filter: invert(1) hue-rotate(180deg) brightness(0.85) contrast(0.9) saturate(0.6);
+}
