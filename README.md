@@ -111,9 +111,6 @@ FOURSQUARE_API_KEY=your_foursquare_key  # foursquare.com/developers
 
 The app labels this data as simulated.
 
-## AI-assisted development
-
-SceneScout was built with AI-assisted development tools: **IBM Bob** and **Claude Code**. Much of the commit history was written through Claude Code, and the rest by the team.
 
 ## Team
 
