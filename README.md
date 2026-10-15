@@ -12,7 +12,7 @@ Built with AI-assisted development: IBM Bob was used throughout.
 
 ## Features
 
-- **Natural-language search.** Type something like *"modern industrial warehouse with big windows near downtown Chicago, under $500 a day"*. An LLM (Groq) turns it into structured filters: building type, style, light, size, budget, radius, and location. If no Groq key is set, a local keyword parser takes over.
+- **Natural-language search.** Type something like *"industrial warehouse with big windows in Long Island City, under $500 a day"*. An LLM (Groq) turns it into structured filters: building type, style, light, size, budget, radius, and location. If no Groq key is set, a local keyword parser takes over.
 - **899-location catalog plus live search.** The bundled catalog is built from four public US real-estate datasets. Live OpenStreetMap natural-feature search (lakes, parks, mountains…) and Foursquare business search cover what the catalog doesn't.
 - **Explainable suitability score.** Every result gets an overall match percentage and a nine-factor breakdown, with a short written reason for each factor.
 - **Walkable 3D digital twin.** Floor plans are generated procedurally for each property and rendered in Three.js. You can click to walk around with BVH mesh collision, take a cinematic flythrough, or switch to a dollhouse view.
@@ -112,6 +112,8 @@ FOURSQUARE_API_KEY=your_foursquare_key  # foursquare.com/developers
 - Interiors are procedural, not scanned.
 
 The app labels this data as simulated.
+
+**Known limitation: uneven catalog coverage.** The 899 listings come from housing datasets, so most are houses (614). Only 20 are warehouses, and all of them are in New York City. A search for a type with no nearby listings returns the closest available match instead of nothing. Live natural-feature and business search fill some of those gaps.
 
 ## AI-assisted development
 
